@@ -11,7 +11,7 @@ def parse_turno(turno_raw):
         def extract_time(t_str):
             t_str = t_str.strip().split(" ")[0]
             parts = t_str.split(":")
-            if len(parts) == 3: return time(int(parts[0]), int(parts[1]), int(parts[2]))
+            # Maneja H:M:S o H:M
             return time(int(parts[0]), int(parts[1]))
         return (extract_time(partes[0]), extract_time(partes[1]))
     except:
@@ -26,8 +26,8 @@ def load_turnos(file):
     col_nombre = df.columns[0]
     turnos_dict = {}
     for _, row in df.iterrows():
-        nombre = str(row[col_nombre]).strip()
-        if nombre == "nan" or not nombre: continue
+        nombre = str(row[col_nombre]).strip().upper() # Normalizado
+        if nombre == "NAN" or not nombre: continue
         dias = {}
         for fecha in df.columns[1:]:
             if pd.isna(fecha): continue
@@ -39,7 +39,9 @@ def asignar_ventas(df_ventas, turnos, fecha_i, fecha_f):
     df_ventas['date'] = pd.to_datetime(df_ventas['date'])
     mask = (df_ventas['date'].dt.date >= fecha_i) & (df_ventas['date'].dt.date <= fecha_f)
     df_f = df_ventas.loc[mask].copy()
-    if df_f.empty: return None, None, None, None, None
+    
+    if df_f.empty:
+        return {"error": "No hay datos en el rango seleccionado"}
 
     registros = []
     for _, row in df_f.iterrows():
@@ -70,11 +72,18 @@ def asignar_ventas(df_ventas, turnos, fecha_i, fecha_f):
             })
 
     df_detallado = pd.DataFrame(registros)
-    df_resumen = df_detallado[df_detallado["estado"] == "Asignado"].groupby("coordinador")["venta_asignada"].sum().reset_index()
-    df_sin_agente = df_detallado[df_detallado["estado"] == "No Asignado"].copy()
-    resumen_sin_agente = df_sin_agente.groupby(["fecha", "franja"]).agg(ventas_totales_perdidas=("venta_original", "sum"), cantidad_viajes=("venta_original", "count")).reset_index()
+    
+    # Reportes específicos
+    df_resumen_pago = df_detallado[df_detallado["estado"] == "Asignado"].groupby("coordinador")["venta_asignada"].sum().reset_index()
+    
+    df_sin_agente_det = df_detallado[df_detallado["estado"] == "No Asignado"].copy()
+    df_sin_agente_res = df_sin_agente_det.groupby(["fecha", "franja"]).agg(
+        ventas_totales_no_asignadas=("venta_original", "sum"),
+        cantidad_viajes=("venta_original", "count")
+    ).reset_index()
 
-    vista_sup = []
+    # Vista Visual por columnas (Coordinador X | Turno X)
+    vista_visual_list = []
     for (f, fr), group in df_detallado.groupby(["fecha", "franja"]):
         fila = {"Fecha": f, "Franja": fr}
         agentes = group[group["estado"] == "Asignado"][["coordinador", "turno_ref"]].drop_duplicates()
@@ -82,9 +91,15 @@ def asignar_ventas(df_ventas, turnos, fecha_i, fecha_f):
             fila[f"Coordinador {i}"] = r_ag["coordinador"]
             fila[f"Turno Coordinador {i}"] = r_ag["turno_ref"]
         fila["Venta Total Franja"] = group.drop_duplicates(subset=["hora_exacta"])["venta_original"].sum()
-        vista_sup.append(fila)
+        vista_visual_list.append(fila)
     
-    df_vista_visual = pd.DataFrame(vista_sup).fillna("-")
+    df_visual = pd.DataFrame(vista_visual_list).fillna("-")
 
-    # RETORNO DE 5 ELEMENTOS
-    return df_detallado, df_resumen, resumen_sin_agente, df_vista_visual, df_sin_agente
+    # RETORNO UNICO (DICCIONARIO)
+    return {
+        "detalle_completo": df_detallado,
+        "resumen_pagos": df_resumen_pago,
+        "sin_agente_resumen": df_sin_agente_res,
+        "sin_agente_detalle": df_sin_agente_det,
+        "vista_visual": df_visual
+    }
