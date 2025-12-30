@@ -19,7 +19,7 @@ if st.button("🚀 Generar Reportes y Análisis"):
             turnos = load_turnos(t_file)
             df_ventas = pd.read_excel(v_file)
             
-            # CORRECCIÓN AQUÍ: Recibimos los 5 elementos que devuelve processor.py
+            # SOLUCIÓN AL ERROR: Ahora recibimos 5 variables (det, res, res_sin, visual, det_sin)
             det, res, res_sin, visual, det_sin = asignar_ventas(df_ventas, turnos, f_i, f_f)
 
             if det is not None:
@@ -27,23 +27,25 @@ if st.button("🚀 Generar Reportes y Análisis"):
 
                 with tab1:
                     st.subheader("Visualización por Franja Horaria")
+                    st.write("Detalle de coordinadores activos y sus turnos por cada hora.")
                     st.dataframe(visual, use_container_width=True)
 
                 with tab2:
-                    col_a, col_b = st.columns([1, 2])
-                    with col_a:
-                        st.subheader("Resumen de Vacíos")
+                    st.subheader("Análisis de Ventas Sin Coordinador")
+                    c1, c2 = st.columns([1, 2])
+                    with c1:
+                        st.write("**Resumen por Hora**")
                         st.dataframe(res_sin, use_container_width=True)
                         st.metric("Total No Asignado", f"${res_sin['ventas_totales_perdidas'].sum():,.0f}")
-                    with col_b:
-                        st.subheader("Detalle de Ventas sin Coordinador")
+                    with c2:
+                        st.write("**Registro de Ventas Huérfanas**")
                         st.dataframe(det_sin[["fecha", "hora_exacta", "venta_original"]], use_container_width=True)
 
                 with tab3:
                     st.subheader("Total a Pagar por Coordinador")
                     st.table(res.style.format({"venta_asignada": "${:,.0f}"}))
 
-                # Exportación
+                # Exportación Excel con todas las pestañas
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
                     visual.to_excel(w, sheet_name="Franjas_y_Coordinadores", index=False)
@@ -51,8 +53,8 @@ if st.button("🚀 Generar Reportes y Análisis"):
                     det_sin.to_excel(w, sheet_name="Ventas_No_Asignadas", index=False)
                     res.to_excel(w, sheet_name="Totales_Pago", index=False)
                 
-                st.download_button("📥 Descargar Reporte Completo", buf.getvalue(), f"Reporte_Airport.xlsx")
+                st.download_button("📥 Descargar Reporte Operativo", buf.getvalue(), f"Reporte_Airport.xlsx")
             else:
                 st.warning("No hay datos para el rango seleccionado.")
         except Exception as e:
-            st.error(f"Error procesando los datos: {e}")
+            st.error(f"Se produjo un error en el procesamiento: {e}")
