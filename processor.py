@@ -30,15 +30,16 @@ def parse_turno_range(turno_raw):
         return None
 
 def load_turnos(file_path):
-    # Detectar si es CSV o Excel
-    if file_path.endswith('.csv'):
-        df_raw = pd.read_csv(file_path)
-    else:
+    if str(file_path).endswith('.xlsx'):
         df_raw = pd.read_excel(file_path)
-        
+    else:
+        df_raw = pd.read_csv(file_path)
+    
+    # La fila 0 contiene las fechas reales en tu formato de Excel
     actual_dates = pd.to_datetime(df_raw.iloc[0, 1:], errors='coerce').dt.date.tolist()
     
     turnos_data = {}
+    # Los nombres comienzan en la fila con índice 2
     for i in range(2, len(df_raw)):
         row = df_raw.iloc[i]
         name = str(row[0]).strip()
@@ -66,7 +67,7 @@ def get_active_coordinators(sale_dt, turnos):
             if start < end:
                 if start <= sale_time < end:
                     active.append(name)
-            else:
+            else: # Turno que cruza la medianoche
                 if sale_time >= start:
                     active.append(name)
         if yesterday in shifts:
@@ -78,51 +79,37 @@ def get_active_coordinators(sale_dt, turnos):
 
 def process_all(sales_file, turnos_file, start_date, end_date):
     turnos = load_turnos(turnos_file)
-    if sales_file.endswith('.csv'):
-        sales = pd.read_csv(sales_file)
-    else:
+    if str(sales_file).endswith('.xlsx'):
         sales = pd.read_excel(sales_file)
+    else:
+        sales = pd.read_csv(sales_file)
         
     sales['date'] = pd.to_datetime(sales['date'])
     mask = (sales['date'].dt.date >= start_date) & (sales['date'].dt.date <= end_date)
     sales = sales.loc[mask].copy()
     
-    journey_counts = sales.groupby('journey_id').size().to_dict()
-    coord_list = sorted(['Jocsanna Lopez', 'Alexis Cornu', 'Massiel Muñoz', 'Luis Fuentes', 'Cristobal Encina', 'Gerardo Palma'])
+    # Lista maestra de coordinadores (C1-C6)
+    coord_list = ['Jocsanna Lopez', 'Alexis Cornu', 'Massiel Muñoz', 'Luis Fuentes', 'Cristobal Encina', 'Gerardo Palma']
     
     records = []
     for _, row in sales.iterrows():
         s_dt = row['date']
         price = row['qt_price_local']
-        prod = str(row['ds_product_name']).lower()
-        j_id = row['journey_id']
-        j_weight = 1.0 / journey_counts.get(j_id, 1)
-        
         active = get_active_coordinators(s_dt, turnos)
         n = len(active)
         if n > 0:
             for name in active:
                 records.append({
-                    'fecha': s_dt.date(),
-                    'coordinador': name,
-                    'venta': price / n,
-                    'journey': j_weight / n,
-                    'pasajero': 1.0 / n,
-                    'compartido': (1.0 / n) if 'van_compartida' in prod else 0,
-                    'exclusivo': (1.0 / n) if 'van_exclusive' in prod else 0
+                    'fecha': s_dt.date(), 'hora': s_dt.hour, 'coordinador': name, 'venta': price / n
                 })
         else:
             records.append({
-                'fecha': s_dt.date(),
-                'coordinador': 'SIN ASIGNAR',
-                'venta': price,
-                'journey': j_weight,
-                'pasajero': 1.0,
-                'compartido': 1.0 if 'van_compartida' in prod else 0,
-                'exclusivo': 1.0 if 'van_exclusive' in prod else 0
+                'fecha': s_dt.date(), 'hora': s_dt.hour, 'coordinador': 'SIN ASIGNAR', 'venta': price
             })
+
     df_results = pd.DataFrame(records)
     
+    # --- Generación de Matriz Horaria ---
     hourly_rows = []
     current = start_date
     while current <= end_date:
@@ -130,40 +117,29 @@ def process_all(sales_file, turnos_file, start_date, end_date):
             check_dt = datetime.combine(current, time(h, 0))
             active_names = get_active_coordinators(check_dt, turnos)
             row_dict = {'Día': current, 'Hora Inicio': f'{h:02d}:00', 'Hora Fin': f'{(h+1)%24:02d}:00'}
+            
+            # Asignar Nombres y Ventas en columnas fijas
+            h_data = df_results[(df_results['fecha'] == current) & (df_results['hora'] == h)]
             for i, name in enumerate(coord_list):
                 row_dict[f'Coordinador {i+1}'] = name if name in active_names else ""
+                v = h_data[h_data['coordinador'] == name]['venta'].sum()
+                row_dict[f'Ventas C{i+1}'] = round(v) if v > 0 else 0
+            
             hourly_rows.append(row_dict)
         current += timedelta(days=1)
+    
     df_hourly = pd.DataFrame(hourly_rows)
     
+    # --- Resumen Diario ---
     daily_summaries = []
     current = start_date
     while current <= end_date:
         day_data = df_results[df_results['fecha'] == current]
         sum_dict = {'Día': current}
         for i, name in enumerate(coord_list):
-            c_data = day_data[day_data['coordinador'] == name]
-            idx = i + 1
-            sum_dict[f'Ventas Coord {idx}'] = round(c_data['venta'].sum())
-            sum_dict[f'Journeys Coord {idx}'] = round(c_data['journey'].sum(), 2)
-            sum_dict[f'Pasajeros Coord {idx}'] = round(c_data['pasajero'].sum(), 2)
-            sum_dict[f'Pasajeros Exclusivos C{idx}'] = round(c_data['exclusivo'].sum(), 2)
-            sum_dict[f'Pasajeros Compartidos C{idx}'] = round(c_data['compartido'].sum(), 2)
+            v = day_data[day_data['coordinador'] == name]['venta'].sum()
+            sum_dict[f'Ventas Coord {i+1}'] = round(v)
         daily_summaries.append(sum_dict)
         current += timedelta(days=1)
-    df_daily = pd.DataFrame(daily_summaries)
     
-    total_metrics = []
-    for name in coord_list:
-        c_data = df_results[df_results['coordinador'] == name]
-        total_metrics.append({
-            'Coordinador': name,
-            'Ventas Totales': round(c_data['venta'].sum()),
-            'Journeys Totales': round(c_data['journey'].sum(), 2),
-            'Pasajeros Totales': round(c_data['pasajero'].sum(), 2),
-            'Exclusivos Totales': round(c_data['exclusivo'].sum(), 2),
-            'Compartidos Totales': round(c_data['compartido'].sum(), 2)
-        })
-    df_total = pd.DataFrame(total_metrics)
-    
-    return df_hourly, df_daily, df_total
+    return df_hourly, pd.DataFrame(daily_summaries), df_results.groupby('coordinador')['venta'].sum().reset_index() df_hourly, df_daily, df_total
