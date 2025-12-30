@@ -1,44 +1,62 @@
 import streamlit as st
 import pandas as pd
 import io
-from processor import load_turnos, asignar_ventas_avanzado
+from processor import load_turnos, procesar_operacion_maestra
 
-st.set_page_config(page_title="Reporte Aeropuerto", layout="wide")
-st.title("📊 Reporte de Productividad: Coordinadores")
+st.set_page_config(page_title="Sistema Aeropuerto Pro", layout="wide")
+st.title("📊 Control de Productividad y Comisiones")
 
+# SIDEBAR PARA CONFIGURACIÓN
 with st.sidebar:
-    st.header("Carga")
-    t_file = st.file_uploader("Excel Turnos", type=["xlsx"])
-    v_file = st.file_uploader("Excel Ventas", type=["xlsx"])
-    f_i = st.date_input("Desde")
-    f_f = st.date_input("Hasta")
+    st.header("1. Carga de Archivos")
+    f_turnos = st.file_uploader("Subir Turnos (Excel)", type=["xlsx"])
+    f_ventas = st.file_uploader("Subir Ventas (Excel)", type=["xlsx"])
+    
+    st.header("2. Rango de Análisis")
+    f_inicio = st.date_input("Desde")
+    f_fin = st.date_input("Hasta")
 
-if st.button("🚀 Generar Reporte"):
-    if t_file and v_file:
+# PROCESAMIENTO
+if st.button("🚀 Generar Reporte Maestro"):
+    if not f_turnos or not f_ventas:
+        st.error("Faltan archivos para procesar.")
+    else:
         try:
-            turnos = load_turnos(t_file)
-            df_v = pd.read_excel(v_file)
+            turnos = load_turnos(f_turnos)
+            df_ventas = pd.read_excel(f_ventas)
             
-            data = asignar_ventas_avanzado(df_v, turnos, f_i, f_f)
+            # Llamada a la función robusta
+            resultados = procesar_operacion_maestra(df_ventas, turnos, f_inicio, f_fin)
 
-            if "error" in data:
-                st.warning(data["error"])
+            if "error" in resultados:
+                st.warning(resultados["error"])
             else:
-                tab1, tab2 = st.tabs(["📅 Reporte Diario (Fijo)", "🏆 Resumen Acumulado"])
-                
+                tab1, tab2, tab3 = st.tabs(["📅 Reporte Diario", "📈 Resumen General", "⚙️ Mapeo"])
+
                 with tab1:
-                    st.subheader("Registro por Día y Coordinador")
-                    st.dataframe(data["diario"], use_container_width=False)
+                    st.subheader("Registro Diario por Columnas Fijas")
+                    st.dataframe(resultados["reporte_diario"], use_container_width=False)
 
                 with tab2:
-                    st.subheader("Indicadores de Periodo")
-                    st.dataframe(data["resumen"], use_container_width=True)
+                    st.subheader("Indicadores Acumulados")
+                    st.dataframe(resultados["resumen_gral"], use_container_width=True)
 
-                # Exportar
+                with tab3:
+                    st.info("Referencia de posiciones de coordinadores en el reporte.")
+                    st.table(resultados["mapeo"])
+
+                # DESCARGA EXCEL
                 buf = io.BytesIO()
-                with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
-                    data["diario"].to_excel(w, sheet_name="Reporte_Diario", index=False)
-                    data["resumen"].to_excel(w, sheet_name="Resumen_General", index=False)
-                st.download_button("📥 Descargar Excel", buf.getvalue(), "Reporte_Productividad.xlsx")
+                with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+                    resultados["reporte_diario"].to_excel(writer, sheet_name="Diario_C1_C6", index=False)
+                    resultados["resumen_gral"].to_excel(writer, sheet_name="Totales_Periodo", index=False)
+                
+                st.download_button(
+                    label="📥 Descargar Reporte Completo",
+                    data=buf.getvalue(),
+                    file_name=f"Reporte_Productividad_{f_inicio}.xlsx",
+                    mime="application/vnd.ms-excel"
+                )
+
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Error técnico detectado: {e}")
