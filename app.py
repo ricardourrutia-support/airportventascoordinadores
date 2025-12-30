@@ -1,15 +1,15 @@
 import streamlit as st
 import pandas as pd
 import io
-from processor import load_turnos, asignar_ventas_completo
+from processor import load_turnos, asignar_ventas_avanzado
 
-st.set_page_config(page_title="Reporte Operativo Airport", layout="wide")
-st.title("📊 Análisis de Productividad por Coordinador")
+st.set_page_config(page_title="Reporte Aeropuerto", layout="wide")
+st.title("📊 Reporte de Productividad: Coordinadores")
 
 with st.sidebar:
-    st.header("Carga de Datos")
-    t_file = st.file_uploader("Archivo de Turnos", type=["xlsx"])
-    v_file = st.file_uploader("Base de Ventas", type=["xlsx"])
+    st.header("Carga")
+    t_file = st.file_uploader("Excel Turnos", type=["xlsx"])
+    v_file = st.file_uploader("Excel Ventas", type=["xlsx"])
     f_i = st.date_input("Desde")
     f_f = st.date_input("Hasta")
 
@@ -19,33 +19,26 @@ if st.button("🚀 Generar Reporte"):
             turnos = load_turnos(t_file)
             df_v = pd.read_excel(v_file)
             
-            res = asignar_ventas_completo(df_v, turnos, f_i, f_f)
+            data = asignar_ventas_avanzado(df_v, turnos, f_i, f_f)
 
-            if "error" in res:
-                st.error(res["error"])
+            if "error" in data:
+                st.warning(data["error"])
             else:
-                tab1, tab2, tab3 = st.tabs(["📅 Reporte Diario", "🏆 Resumen General", "📍 Mapeo de Columnas"])
-
+                tab1, tab2 = st.tabs(["📅 Reporte Diario (Fijo)", "🏆 Resumen Acumulado"])
+                
                 with tab1:
-                    st.subheader("Registro Diario de Indicadores")
-                    st.write("Cada columna de coordinador es fija para el mismo agente durante todo el periodo.")
-                    st.dataframe(res["reporte_diario"], use_container_width=False)
+                    st.subheader("Registro por Día y Coordinador")
+                    st.dataframe(data["diario"], use_container_width=False)
 
                 with tab2:
-                    st.subheader("Indicadores Totales por Agente")
-                    st.dataframe(res["resumen_gral"], use_container_width=True)
+                    st.subheader("Indicadores de Periodo")
+                    st.dataframe(data["resumen"], use_container_width=True)
 
-                with tab3:
-                    st.info("Esta tabla indica qué número de columna se le asignó a cada coordinador en el reporte.")
-                    st.table(res["coordinadores_fijos"])
-
-                # EXCEL
+                # Exportar
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
-                    res["reporte_diario"].to_excel(w, sheet_name="Reporte_Diario", index=False)
-                    res["resumen_gral"].to_excel(w, sheet_name="Totales", index=False)
-                
-                st.download_button("📥 Descargar Reporte en Excel", buf.getvalue(), "Reporte_Productividad.xlsx")
-
+                    data["diario"].to_excel(w, sheet_name="Reporte_Diario", index=False)
+                    data["resumen"].to_excel(w, sheet_name="Resumen_General", index=False)
+                st.download_button("📥 Descargar Excel", buf.getvalue(), "Reporte_Productividad.xlsx")
         except Exception as e:
-            st.error(f"Error en el proceso: {e}")
+            st.error(f"Error: {e}")
