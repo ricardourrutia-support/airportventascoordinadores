@@ -13,20 +13,8 @@ d_fin = st.sidebar.date_input("Fin", date(2025, 11, 30))
 
 if st.sidebar.button("Procesar Reporte"):
     if t_file and v_file:
-        df_final, lista_nombres = procesar_v2_fijo(v_file, t_file, d_ini, d_fin)
-        
-        st.info("💡 Cada columna pertenece a un único coordinador. Si no aparece nombre, es porque no tenía turno.")
-        
-        # Mostrar leyenda de quién es quién
-        cols = st.columns(len(lista_nombres))
-        for i, nombre in enumerate(lista_nombres):
-            cols[i].metric(f"Columna {i+1}", nombre)
-
-        st.dataframe(df_final, use_container_width=True)
-        
-        # Excel
-        import io
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-            df_final.to_excel(writer, index=False)
-        st.download_button("Descargar Reporte", buf.getvalue(), "reporte_fijo.xlsx")
+        try:
+            df_final, lista_nombres = procesar_v2_fijo(v_file, t_file, d_ini, d_fin)
+            st.dataframe(df_final, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error al procesar: {e}")
