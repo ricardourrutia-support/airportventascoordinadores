@@ -3,9 +3,8 @@ import numpy as np
 from datetime import datetime, time, timedelta
 
 def parse_time(t_str):
-    t_str = str(t_str).strip().split(' ')[0]
+    t_str = str(t_str).strip().lower().split(' ')[0]
     try:
-        # Intenta H:M:S o H:M
         if t_str.count(':') == 2:
             return datetime.strptime(t_str, "%H:%M:%S").time()
         return datetime.strptime(t_str, "%H:%M").time()
@@ -16,23 +15,21 @@ def parse_turno_range(turno_raw):
     t_str = str(turno_raw).strip().lower()
     if t_str in ["", "libre", "nan"]: return None
     try:
-        partes = t_str.split('-')
+        # Limpiar ruidos como "diurno/nocturno"
+        t_clean = t_str.replace("diurno","").replace("nocturno","").replace("/","").strip()
+        partes = t_clean.split('-')
         t_ini, t_fin = parse_time(partes[0]), parse_time(partes[1])
         return (t_ini, t_fin) if t_ini and t_fin else None
     except: return None
 
 def load_turnos(file_path):
-    # Detección robusta de formato y codificación
     if str(file_path.name).endswith('.xlsx'):
         df_raw = pd.read_excel(file_path, header=None)
     else:
-        # Si es CSV, intentamos con latin1 que es común en Excels guardados como CSV
         df_raw = pd.read_csv(file_path, header=None, encoding='latin1', sep=None, engine='python')
-
-    # Fila 1 tiene las fechas (según tu estructura)
+    
     fechas_fila = df_raw.iloc[1].tolist()
     fechas = [fechas_fila[0]] + list(pd.to_datetime(fechas_fila[1:], errors='coerce'))
-    
     df = df_raw.iloc[2:].copy()
     df.columns = fechas
     
@@ -40,14 +37,8 @@ def load_turnos(file_path):
     for _, row in df.iterrows():
         nombre = str(row.iloc[0]).strip().upper()
         if nombre in ["NAN", "", "NOMBRE"]: continue
-        
-        # Guardar turnos por fecha
-        dias = {}
-        for idx, f in enumerate(df.columns[1:]):
-            if pd.isna(f): continue
-            # Ajustar índice porque f empieza desde la col 1
-            val = row.iloc[idx + 1]
-            dias[f.date() if hasattr(f, 'date') else f] = parse_turno_range(val)
+        dias = {f.date() if hasattr(f, 'date') else f: parse_turno_range(row.iloc[i+1]) 
+                for i, f in enumerate(df.columns[1:]) if not pd.isna(f)}
         turnos_data[nombre] = dias
     return turnos_data
 
@@ -56,21 +47,17 @@ def get_active_coordinators(sale_dt, turnos):
     yesterday = s_date - timedelta(days=1)
     active = []
     for name, shifts in turnos.items():
-        # Turno del mismo día
         if s_date in shifts and shifts[s_date]:
             start, end = shifts[s_date]
-            if (start < end and start <= s_time < end) or (start > end and s_time >= start):
+            if (start < end and start <= s_time < end) or (start > end and (s_time >= start or s_time < end)):
                 active.append(name)
-        # Turno del día anterior (cruce de medianoche)
         if yesterday in shifts and shifts[yesterday]:
             start, end = shifts[yesterday]
-            if start > end and s_time < end:
-                active.append(name)
+            if start > end and s_time < end: active.append(name)
     return list(set(active))
 
-def procesar_v2_fijo(ventas_file, turnos_file, start_date, end_date):
+def procesar_final_airport(ventas_file, turnos_file, start_date, end_date):
     turnos = load_turnos(turnos_file)
-    
     if str(ventas_file.name).endswith('.xlsx'):
         sales = pd.read_excel(ventas_file)
     else:
@@ -79,44 +66,53 @@ def procesar_v2_fijo(ventas_file, turnos_file, start_date, end_date):
     sales['date'] = pd.to_datetime(sales['date'])
     sales = sales[(sales['date'].dt.date >= start_date) & (sales['date'].dt.date <= end_date)].copy()
 
-    # --- MAPEO ESTÁTICO DE COORDINADORES ---
-    # Esto asegura que el Coordinador 1 sea SIEMPRE el mismo nombre
-    lista_coordinadores = sorted(list(turnos.keys()))
-    mapa_fijo = {nombre: i+1 for i, nombre in enumerate(lista_coordinadores)}
+    # Identidad Fija: Ordenamos nombres para que la Columna 1 sea siempre la misma persona
+    nombres_fijos = sorted(list(turnos.keys()))
+    mapa_cols = {nombre: i+1 for i, nombre in enumerate(nombres_fijos)}
     
-    records = []
+    # Asignación de ventas proporcional
+    ventas_calc = []
     for _, row in sales.iterrows():
         activos = get_active_coordinators(row['date'], turnos)
         n = len(activos)
         if n > 0:
             for name in activos:
-                records.append({
-                    'fecha': row['date'].date(), 
-                    'hora': row['date'].hour, 
-                    'coordinador': name, 
-                    'venta': row['qt_price_local'] / n
-                })
-    df_res = pd.DataFrame(records)
+                ventas_calc.append({'fecha': row['date'].date(), 'hora': row['date'].hour, 'coord': name, 'v': row['qt_price_local']/n})
+    df_v = pd.DataFrame(ventas_calc)
 
-    # --- MATRIZ DE CASILLEROS FIJOS ---
-    hourly_rows = []
+    # 1. GENERAR MATRIZ HORARIA
+    matriz_data = []
+    # 2. GENERAR RESUMEN DIARIO (Estructura de tabla)
+    diario_data = []
+    
     curr = start_date
     while curr <= end_date:
+        fila_diaria = {'Día': curr}
         for h in range(24):
             check_dt = datetime.combine(curr, time(h, 0))
-            activos_ahora = get_active_coordinators(check_dt, turnos)
-            fila = {'Día': curr, 'Tramo': f'{h:02d}:00 - {h+1:02d}:00'}
+            activos_h = get_active_coordinators(check_dt, turnos)
+            fila_h = {'Día': curr, 'Tramo': f'{h:02d}:00 - {h+1:02d}:00'}
             
-            for nombre, col_idx in mapa_fijo.items():
-                if nombre in activos_ahora:
-                    fila[f'Coordinador {col_idx}'] = nombre
-                    v = df_res[(df_res['fecha'] == curr) & (df_res['hora'] == h) & (df_res['coordinador'] == nombre)]['venta'].sum()
-                    fila[f'Venta C{col_idx}'] = round(v)
+            for nom, idx in mapa_cols.items():
+                if nom in activos_h:
+                    fila_h[f'Coordinador {idx}'] = nom
+                    v_h = df_v[(df_v['fecha']==curr) & (df_v['hora']==h) & (df_v['coord']==nom)]['v'].sum()
+                    fila_h[f'Venta C{idx}'] = round(v_h)
                 else:
-                    fila[f'Coordinador {col_idx}'] = "" # Vacío si no está
-                    fila[f'Venta C{col_idx}'] = 0
-            
-            hourly_rows.append(fila)
-        curr += timedelta(days=1)
+                    fila_h[f'Coordinador {idx}'] = ""
+                    fila_h[f'Venta C{idx}'] = 0
+            matriz_data.append(fila_h)
         
-    return pd.DataFrame(hourly_rows), lista_coordinadores
+        # Llenar fila diaria
+        for nom, idx in mapa_cols.items():
+            v_d = df_v[(df_v['fecha']==curr) & (df_v['coord']==nom)]['v'].sum()
+            fila_diaria[f'{nom} (Ventas)'] = round(v_d)
+        diario_data.append(fila_diaria)
+        
+        curr += timedelta(days=1)
+
+    # 3. RESUMEN PERIODO
+    resumen_periodo = df_v.groupby('coord')['v'].sum().round(0).reset_index()
+    resumen_periodo.columns = ['Coordinador', 'Venta Total Periodo']
+
+    return pd.DataFrame(matriz_data), pd.DataFrame(diario_data), resumen_periodo, lista_coordinadores
