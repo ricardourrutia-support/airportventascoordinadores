@@ -15,7 +15,6 @@ def parse_turno_range(turno_raw):
     t_str = str(turno_raw).strip().lower()
     if t_str in ["", "libre", "nan"]: return None
     try:
-        # Limpiar ruidos como "diurno/nocturno"
         t_clean = t_str.replace("diurno","").replace("nocturno","").replace("/","").strip()
         partes = t_clean.split('-')
         t_ini, t_fin = parse_time(partes[0]), parse_time(partes[1])
@@ -23,22 +22,16 @@ def parse_turno_range(turno_raw):
     except: return None
 
 def load_turnos(file_path):
-    if str(file_path.name).endswith('.xlsx'):
-        df_raw = pd.read_excel(file_path, header=None)
-    else:
-        df_raw = pd.read_csv(file_path, header=None, encoding='latin1', sep=None, engine='python')
-    
-    fechas_fila = df_raw.iloc[1].tolist()
-    fechas = [fechas_fila[0]] + list(pd.to_datetime(fechas_fila[1:], errors='coerce'))
+    df_raw = pd.read_excel(file_path, header=None) if str(file_path.name).endswith('.xlsx') else pd.read_csv(file_path, header=None, encoding='latin1', sep=None, engine='python')
+    actual_dates = pd.to_datetime(df_raw.iloc[1, 1:], errors='coerce').dt.date.tolist()
     df = df_raw.iloc[2:].copy()
-    df.columns = fechas
+    df.columns = [df_raw.iloc[2,0]] + actual_dates
     
     turnos_data = {}
     for _, row in df.iterrows():
         nombre = str(row.iloc[0]).strip().upper()
         if nombre in ["NAN", "", "NOMBRE"]: continue
-        dias = {f.date() if hasattr(f, 'date') else f: parse_turno_range(row.iloc[i+1]) 
-                for i, f in enumerate(df.columns[1:]) if not pd.isna(f)}
+        dias = {f: parse_turno_range(row.iloc[i+1]) for i, f in enumerate(actual_dates) if f is not pd.NaT}
         turnos_data[nombre] = dias
     return turnos_data
 
@@ -56,43 +49,35 @@ def get_active_coordinators(sale_dt, turnos):
             if start > end and s_time < end: active.append(name)
     return list(set(active))
 
-def procesar_final_airport(ventas_file, turnos_file, start_date, end_date):
+def procesar_maestro(ventas_file, turnos_file, start_date, end_date):
     turnos = load_turnos(turnos_file)
-    if str(ventas_file.name).endswith('.xlsx'):
-        sales = pd.read_excel(ventas_file)
-    else:
-        sales = pd.read_csv(ventas_file, encoding='latin1', sep=None, engine='python')
-
+    sales = pd.read_excel(ventas_file) if str(ventas_file.name).endswith('.xlsx') else pd.read_csv(ventas_file, encoding='latin1', sep=None, engine='python')
     sales['date'] = pd.to_datetime(sales['date'])
     sales = sales[(sales['date'].dt.date >= start_date) & (sales['date'].dt.date <= end_date)].copy()
 
-    # Identidad Fija: Ordenamos nombres para que la Columna 1 sea siempre la misma persona
     nombres_fijos = sorted(list(turnos.keys()))
     mapa_cols = {nombre: i+1 for i, nombre in enumerate(nombres_fijos)}
     
-    # Asignación de ventas proporcional
     ventas_calc = []
     for _, row in sales.iterrows():
         activos = get_active_coordinators(row['date'], turnos)
         n = len(activos)
         if n > 0:
             for name in activos:
-                ventas_calc.append({'fecha': row['date'].date(), 'hora': row['date'].hour, 'coord': name, 'v': row['qt_price_local']/n})
+                ventas_calc.append({'fecha': row['date'].date(), 'hora': row['date'].hour, 'coord': name, 'v': row['qt_price_local']/n, 'asignado': True})
+        else:
+            ventas_calc.append({'fecha': row['date'].date(), 'hora': row['date'].hour, 'coord': 'SIN ASIGNAR', 'v': row['qt_price_local'], 'asignado': False})
+    
     df_v = pd.DataFrame(ventas_calc)
 
-    # 1. GENERAR MATRIZ HORARIA
+    # 1. MATRIZ HORARIA Y NO ASIGNADOS
     matriz_data = []
-    # 2. GENERAR RESUMEN DIARIO (Estructura de tabla)
-    diario_data = []
-    
+    no_asignados_data = []
     curr = start_date
     while curr <= end_date:
-        fila_diaria = {'Día': curr}
         for h in range(24):
-            check_dt = datetime.combine(curr, time(h, 0))
-            activos_h = get_active_coordinators(check_dt, turnos)
+            activos_h = get_active_coordinators(datetime.combine(curr, time(h, 0)), turnos)
             fila_h = {'Día': curr, 'Tramo': f'{h:02d}:00 - {h+1:02d}:00'}
-            
             for nom, idx in mapa_cols.items():
                 if nom in activos_h:
                     fila_h[f'Coordinador {idx}'] = nom
@@ -102,17 +87,13 @@ def procesar_final_airport(ventas_file, turnos_file, start_date, end_date):
                     fila_h[f'Coordinador {idx}'] = ""
                     fila_h[f'Venta C{idx}'] = 0
             matriz_data.append(fila_h)
-        
-        # Llenar fila diaria
-        for nom, idx in mapa_cols.items():
-            v_d = df_v[(df_v['fecha']==curr) & (df_v['coord']==nom)]['v'].sum()
-            fila_diaria[f'{nom} (Ventas)'] = round(v_d)
-        diario_data.append(fila_diaria)
-        
+            
+            # Ventas No Asignadas por franja
+            v_na = df_v[(df_v['fecha']==curr) & (df_v['hora']==h) & (df_v['asignado']==False)]['v'].sum()
+            no_asignados_data.append({'Día': curr, 'Tramo': f'{h:02d}:00 - {h+1:02d}:00', 'Venta No Asignada': round(v_na)})
         curr += timedelta(days=1)
 
-    # 3. RESUMEN PERIODO
-    resumen_periodo = df_v.groupby('coord')['v'].sum().round(0).reset_index()
-    resumen_periodo.columns = ['Coordinador', 'Venta Total Periodo']
-
-    return pd.DataFrame(matriz_data), pd.DataFrame(diario_data), resumen_periodo, lista_coordinadores
+    df_na = pd.DataFrame(no_asignados_data)
+    resumen_na_diario = df_na.groupby('Día')['Venta No Asignada'].sum().reset_index()
+    
+    return pd.DataFrame(matriz_data), df_na, resumen_na_diario, df_v[df_v['asignado']==True].groupby('coord')['v'].sum().reset_index()
