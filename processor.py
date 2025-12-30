@@ -71,26 +71,20 @@ def asignar_ventas(df_ventas, turnos, fecha_i, fecha_f):
 
     df_detallado = pd.DataFrame(registros)
     df_resumen = df_detallado[df_detallado["estado"] == "Asignado"].groupby("coordinador")["venta_asignada"].sum().reset_index()
-    
-    # Reporte SIN ASIGNAR
     df_sin_agente = df_detallado[df_detallado["estado"] == "No Asignado"].copy()
-    resumen_sin_agente = df_sin_agente.groupby(["fecha", "franja"]).agg(
-        ventas_totales_perdidas=("venta_original", "sum"),
-        cantidad_viajes=("venta_original", "count")
-    ).reset_index()
+    resumen_sin_agente = df_sin_agente.groupby(["fecha", "franja"]).agg(ventas_totales_perdidas=("venta_original", "sum"), cantidad_viajes=("venta_original", "count")).reset_index()
 
-    # Vista Visual (Columnas Coordinador X / Turno Coordinador X)
     vista_sup = []
     for (f, fr), group in df_detallado.groupby(["fecha", "franja"]):
         fila = {"Fecha": f, "Franja": fr}
-        agentes_en_franja = group[group["estado"] == "Asignado"][["coordinador", "turno_ref"]].drop_duplicates()
-        for i, (_, row_ag) in enumerate(agentes_en_franja.iterrows(), 1):
-            fila[f"Coordinador {i}"] = row_ag["coordinador"]
-            fila[f"Turno Coordinador {i}"] = row_ag["turno_ref"]
+        agentes = group[group["estado"] == "Asignado"][["coordinador", "turno_ref"]].drop_duplicates()
+        for i, (_, r_ag) in enumerate(agentes.iterrows(), 1):
+            fila[f"Coordinador {i}"] = r_ag["coordinador"]
+            fila[f"Turno Coordinador {i}"] = r_ag["turno_ref"]
         fila["Venta Total Franja"] = group.drop_duplicates(subset=["hora_exacta"])["venta_original"].sum()
         vista_sup.append(fila)
     
     df_vista_visual = pd.DataFrame(vista_sup).fillna("-")
 
-    # AQUÍ ESTÁ LA CLAVE: Retornamos los 5 elementos
+    # RETORNO DE 5 ELEMENTOS
     return df_detallado, df_resumen, resumen_sin_agente, df_vista_visual, df_sin_agente
