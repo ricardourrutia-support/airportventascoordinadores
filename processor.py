@@ -55,7 +55,7 @@ def procesar_final_airport(ventas_file, turnos_file, start_date, end_date):
     sales['date'] = pd.to_datetime(sales['date'])
     sales = sales[(sales['date'].dt.date >= start_date) & (sales['date'].dt.date <= end_date)].copy()
 
-    # LISTA MAESTRA FIJA (Asegura que el Coordinador 1 siempre sea el mismo)
+    # MAPEO FIJO: El Coordinador 1 siempre será el mismo nombre
     nombres_fijos = sorted(list(turnos.keys()))
     mapa_cols = {nombre: i+1 for i, nombre in enumerate(nombres_fijos)}
     
@@ -71,16 +71,13 @@ def procesar_final_airport(ventas_file, turnos_file, start_date, end_date):
     
     df_v = pd.DataFrame(ventas_calc)
 
-    # 1. GENERAR MATRIZ HORARIA
     matriz_data = []
-    # 2. GENERAR REPORTE DE NO ASIGNADOS
-    na_data = []
+    na_horario = []
     
     curr = start_date
     while curr <= end_date:
         for h in range(24):
-            check_dt = datetime.combine(curr, time(h, 0))
-            activos_h = get_active_coordinators(check_dt, turnos)
+            activos_h = get_active_coordinators(datetime.combine(curr, time(h, 0)), turnos)
             fila_h = {'Día': curr, 'Tramo': f'{h:02d}:00 - {h+1:02d}:00'}
             
             for nom, idx in mapa_cols.items():
@@ -93,14 +90,14 @@ def procesar_final_airport(ventas_file, turnos_file, start_date, end_date):
                     fila_h[f'Venta C{idx}'] = 0
             matriz_data.append(fila_h)
             
-            # Sumar ventas huérfanas
+            # Ventas No Asignadas
             v_na = df_v[(df_v['fecha']==curr) & (df_v['hora']==h) & (df_v['asignado']==False)]['v'].sum()
-            na_data.append({'Día': curr, 'Tramo': f'{h:02d}:00 - {h+1:02d}:00', 'Venta No Asignada': round(v_na)})
+            na_horario.append({'Día': curr, 'Tramo': f'{h:02d}:00 - {h+1:02d}:00', 'Venta No Asignada': round(v_na)})
         curr += timedelta(days=1)
 
-    df_na_h = pd.DataFrame(na_data)
+    df_na_h = pd.DataFrame(na_horario)
     df_na_d = df_na_h.groupby('Día')['Venta No Asignada'].sum().reset_index()
-    resumen_periodo = df_v[df_v['asignado']==True].groupby('coord')['v'].sum().round(0).reset_index()
-    resumen_periodo.columns = ['Coordinador', 'Venta Total Periodo']
+    resumen_p = df_v[df_v['asignado']==True].groupby('coord')['v'].sum().round(0).reset_index()
+    resumen_p.columns = ['Coordinador', 'Venta Total']
 
-    return pd.DataFrame(matriz_data), df_na_h, df_na_d, resumen_periodo
+    return pd.DataFrame(matriz_data), df_na_h, df_na_d, resumen_p
