@@ -31,76 +31,62 @@ def load_turnos(file):
         turnos_dict[nombre] = dias
     return turnos_dict
 
-def asignar_ventas_completo(df_ventas, turnos, fecha_i, fecha_f):
+def asignar_ventas_avanzado(df_ventas, turnos, fecha_i, fecha_f):
     df_ventas['date'] = pd.to_datetime(df_ventas['date'])
     mask = (df_ventas['date'].dt.date >= fecha_i) & (df_ventas['date'].dt.date <= fecha_f)
     df_f = df_ventas.loc[mask].copy()
     
-    if df_f.empty: return {"error": "No hay datos en el periodo"}
+    if df_f.empty: return {"error": "Sin datos en el rango."}
 
-    # Identificar todos los coordinadores únicos para asignarles una columna fija
-    todos_coordinadores = sorted(list(turnos.keys()))
-    coord_map = {nom: i+1 for i, nom in enumerate(todos_coordinadores)}
+    # Definir orden fijo de coordinadores (para que C1 sea siempre el mismo)
+    coords_lista = sorted(list(turnos.keys()))
+    coord_pos = {nom: i+1 for i, nom in enumerate(coords_lista)}
     
     registros = []
     for _, row in df_f.iterrows():
         f_hora = row['date']
-        fecha_v = f_hora.date()
-        hora_v = f_hora.time()
         monto = row['qt_price_local']
         prod = str(row['ds_product_name']).lower()
         
         activos = []
         for nombre, d_turnos in turnos.items():
-            r = d_turnos.get(fecha_v)
+            r = d_turnos.get(f_hora.date())
             if r:
-                h_i, h_f = r
-                if (h_i <= h_f and h_i <= hora_v <= h_f) or (h_i > h_f and (hora_v >= h_i or hora_v <= h_f)):
+                hi, hf = r
+                if (hi <= hf and hi <= f_hora.time() <= hf) or (hi > hf and (f_hora.time() >= hi or f_hora.time() <= hf)):
                     activos.append(nombre)
 
         if activos:
             n = len(activos)
-            for nombre in activos:
+            for nom in activos:
                 registros.append({
-                    "fecha": fecha_v,
-                    "coordinador": nombre,
-                    "id_col": coord_map[nombre],
-                    "venta": monto / n,
-                    "journey": 1 / n,
-                    "pasajero": 1 / n,
-                    "p_compartido": (1 / n) if "compartida" in prod else 0,
-                    "p_exclusivo": (1 / n) if "exclusive" in prod else 0
+                    "fecha": f_hora.date(), "coord": nom, "pos": coord_pos[nom],
+                    "v": monto/n, "j": 1/n, "p": 1/n,
+                    "pc": 1/n if "compartida" in prod else 0,
+                    "pe": 1/n if "exclusive" in prod else 0
                 })
 
-    df_det = pd.DataFrame(registros)
-    if df_det.empty: return {"error": "No se pudieron asignar ventas a ningún turno"}
+    if not registros: return {"error": "No hubo coordinadores en las horas de venta."}
+    df_res = pd.DataFrame(registros)
 
-    # --- REPORTE DIARIO ADAPTATIVO ---
-    reporte_diario = []
-    for dia, g_dia in df_det.groupby("fecha"):
+    # REPORTE DIARIO POR COLUMNAS
+    diario = []
+    for dia, g_dia in df_res.groupby("fecha"):
         fila = {"Día": dia}
-        # Inicializar columnas para los coordinadores mapeados
-        for nombre, idx in coord_map.items():
-            g_coord = g_dia[g_dia["coordinador"] == nombre]
-            fila[f"Coordinador {idx}"] = nombre if not g_coord.empty else ""
-            fila[f"Ventas Coord {idx}"] = round(g_coord["venta"].sum(), 0)
-            fila[f"Journeys Coord {idx}"] = round(g_coord["journey"].sum(), 1)
-            fila[f"Pasajeros Coord {idx}"] = round(g_coord["pasajero"].sum(), 1)
-            fila[f"Pasajeros Exclusivos C{idx}"] = round(g_coord["p_exclusivo"].sum(), 1)
-            fila[f"Pasajeros Compartidos C{idx}"] = round(g_coord["p_compartido"].sum(), 1)
-        reporte_diario.append(fila)
+        for nom, i in coord_pos.items():
+            g_c = g_dia[g_dia["coord"] == nom]
+            fila[f"Coordinador {i}"] = nom if not g_c.empty else ""
+            fila[f"Ventas Coord {i}"] = round(g_c["v"].sum(), 0)
+            fila[f"Journeys Coord {i}"] = round(g_c["j"].sum(), 1)
+            fila[f"Pasajeros Coord {i}"] = round(g_c["p"].sum(), 1)
+            fila[f"P. Exclusivos C{i}"] = round(g_c["pe"].sum(), 1)
+            fila[f"P. Compartidos C{i}"] = round(g_c["pc"].sum(), 1)
+        diario.append(fila)
 
-    # --- RESUMEN GENERAL ---
-    resumen_gral = df_det.groupby("coordinador").agg({
-        "venta": "sum",
-        "journey": "sum",
-        "pasajero": "sum",
-        "p_exclusivo": "sum",
-        "p_compartido": "sum"
+    # RESUMEN GENERAL (Métricas solicitadas)
+    resumen = df_res.groupby("coord").agg({
+        "v": "sum", "j": "sum", "p": "sum", "pe": "sum", "pc": "sum"
     }).round(1).reset_index()
+    resumen.columns = ["Coordinador", "Ventas Totales", "Total Journeys", "Total Pasajeros", "Pasajeros Exclusivos", "Pasajeros Compartidos"]
 
-    return {
-        "reporte_diario": pd.DataFrame(reporte_diario),
-        "resumen_gral": resumen_gral,
-        "coordinadores_fijos": pd.DataFrame(list(coord_map.items()), columns=["Nombre", "Columna Asignada"])
-    }
+    return {"diario": pd.DataFrame(diario), "resumen": resumen}
