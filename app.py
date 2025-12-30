@@ -1,62 +1,38 @@
 import streamlit as st
 import pandas as pd
 import io
-from processor import load_turnos, procesar_reporte_productividad
+from processor import load_turnos, procesar_maestro_airport
 
-st.set_page_config(page_title="Airport Pro Dashboard", layout="wide")
-st.title("📊 Reporte de Productividad de Coordinadores")
+st.set_page_config(page_title="Airport Pro", layout="wide")
+st.title("📊 Control de Productividad Aeropuerto")
 
-# PANEL LATERAL
 with st.sidebar:
-    st.header("1. Carga de Datos")
-    f_turnos = st.file_uploader("Excel de Turnos", type=["xlsx"])
-    f_ventas = st.file_uploader("Excel de Ventas", type=["xlsx"])
-    
-    st.header("2. Filtros")
-    f_ini = st.date_input("Fecha Inicio")
-    f_fin = st.date_input("Fecha Fin")
+    st.header("Carga de Datos")
+    f_turnos = st.file_uploader("Excel Turnos", type=["xlsx"])
+    f_ventas = st.file_uploader("Excel Ventas", type=["xlsx"])
+    f_ini = st.date_input("Inicio")
+    f_fin = st.date_input("Fin")
 
-# ACCIÓN PRINCIPAL
-if st.button("🚀 Generar Reporte de Comisiones"):
+if st.button("🚀 Procesar Reporte Completo"):
     if f_turnos and f_ventas:
         try:
-            # 1. Cargar datos
             turnos = load_turnos(f_turnos)
             df_v = pd.read_excel(f_ventas)
-            
-            # 2. Procesar con la lógica robusta
-            res = procesar_reporte_productividad(df_v, turnos, f_ini, f_fin)
+            res = procesar_maestro_airport(df_v, turnos, f_ini, f_fin)
 
             if "error" in res:
                 st.warning(res["error"])
             else:
-                t1, t2, t3 = st.tabs(["📅 Reporte Diario (C1-C6)", "📈 Resumen General", "⚙️ Mapeo de Agentes"])
-
+                t1, t2 = st.tabs(["📅 Reporte Diario (C1-C6)", "📈 Resumen General"])
                 with t1:
-                    st.subheader("Registro Diario Multivariable")
-                    st.dataframe(res["reporte_diario"], use_container_width=False)
-
+                    st.dataframe(res["diario"], use_container_width=False)
                 with t2:
-                    st.subheader("Totales Acumulados")
-                    st.dataframe(res["resumen_gral"], use_container_width=True)
-
-                with t3:
-                    st.info("Referencia de posiciones fijas en las columnas del reporte.")
-                    st.table(res["mapeo"])
-
-                # EXPORTACIÓN
+                    st.dataframe(res["resumen"], use_container_width=True)
+                
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-                    res["reporte_diario"].to_excel(writer, sheet_name="Reporte_Diario", index=False)
-                    res["resumen_gral"].to_excel(writer, sheet_name="Resumen_General", index=False)
-                
-                st.download_button(
-                    label="📥 Descargar Reporte Excel",
-                    data=buf.getvalue(),
-                    file_name=f"Reporte_Productividad_{f_ini}.xlsx",
-                    mime="application/vnd.ms-excel"
-                )
+                    res["diario"].to_excel(writer, sheet_name="Diario", index=False)
+                    res["resumen"].to_excel(writer, sheet_name="Resumen", index=False)
+                st.download_button("📥 Descargar Excel", buf.getvalue(), "Reporte_Productividad.xlsx")
         except Exception as e:
-            st.error(f"Error técnico durante el procesamiento: {e}")
-    else:
-        st.error("Por favor, cargue ambos archivos Excel para continuar.")
+            st.error(f"Error: {e}")
