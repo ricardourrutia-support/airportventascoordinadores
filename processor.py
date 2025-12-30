@@ -92,5 +92,5 @@ def asignar_ventas(df_ventas, turnos, fecha_i, fecha_f):
     
     df_vista_visual = pd.DataFrame(vista_sup).fillna("-")
 
-    # RETORNA 5 ELEMENTOS
-    return df_detallado, df_resumen, resumen_sin_agente, df_vista_visual, df_sin_agente df_detallado, df_resumen, resumen_sin_agente, df_vista_visual, df_sin_agente
+    # AQUÍ ESTÁ LA CLAVE: Retornamos los 5 elementos
+    return df_detallado, df_resumen, resumen_sin_agente, df_vista_visual, df_sin_agente
