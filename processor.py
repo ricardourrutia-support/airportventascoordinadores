@@ -1,6 +1,5 @@
 import pandas as pd
 from datetime import datetime, time
-import numpy as np
 
 def parse_turno(turno_raw):
     if pd.isna(turno_raw): return None
@@ -14,8 +13,7 @@ def parse_turno(turno_raw):
             p = txt.split(":")
             return time(int(p[0]), int(p[1]))
         return (extract_time(partes[0]), extract_time(partes[1]))
-    except:
-        return None
+    except: return None
 
 def load_turnos(file):
     df_raw = pd.read_excel(file, header=None)
@@ -32,56 +30,39 @@ def load_turnos(file):
         turnos_dict[nombre] = dias
     return turnos_dict
 
-def procesar_maestro_airport(df_ventas, turnos, fecha_i, fecha_f):
-    df_ventas['date'] = pd.to_datetime(df_ventas['date'])
-    mask = (df_ventas['date'].dt.date >= fecha_i) & (df_ventas['date'].dt.date <= fecha_f)
-    df_p = df_ventas.loc[mask].copy()
-    
-    if df_p.empty:
-        return {"error": "Sin datos en el rango seleccionado."}
+def generar_matriz_operativa(df_ventas, turnos, fecha_i, fecha_f):
+    # Generar rango de fechas
+    rango_dias = pd.date_range(fecha_i, fecha_f)
+    matriz_final = []
 
-    # Mapa fijo de coordinadores (C1, C2...) ordenado alfabéticamente
-    nombres_master = sorted(list(turnos.keys()))
-    mapa_fijo = {nom: i+1 for i, nom in enumerate(nombres_master)}
-    
-    registros = []
-    for _, row in df_p.iterrows():
-        f_hora = row['date']
-        monto = row['qt_price_local']
-        prod = str(row['ds_product_name']).lower()
-        
-        activos = []
-        for nom, d_turnos in turnos.items():
-            r = d_turnos.get(f_hora.date())
-            if r:
-                hi, hf = r
-                if (hi <= hf and hi <= f_hora.time() <= hf) or (hi > hf and (f_hora.time() >= hi or f_hora.time() <= hf)):
-                    activos.append(nom)
+    for dia in rango_dias:
+        fecha_actual = dia.date()
+        # Iterar por las 24 horas del día
+        for hora in range(24):
+            hora_inicio = time(hora, 0)
+            hora_fin = time((hora + 1) % 24, 0)
+            
+            # Buscar coordinadores activos en esta hora específica
+            activos = []
+            for nombre, d_turnos in turnos.items():
+                r = d_turnos.get(fecha_actual)
+                if r:
+                    hi, hf = r
+                    # Lógica de cruce de medianoche
+                    if (hi <= hf and hi <= hora_inicio < hf) or (hi > hf and (hora_inicio >= hi or hora_inicio < hf)):
+                        activos.append(nombre)
+            
+            # Crear la fila del reporte
+            fila = {
+                "Día": fecha_actual,
+                "Hora Inicio": f"{hora:02d}:00",
+                "Hora Fin": f"{(hora+1)%24:02d}:00"
+            }
+            
+            # Llenar Coordinador 1 al 6
+            for i in range(6):
+                fila[f"Coordinador {i+1}"] = activos[i] if i < len(activos) else ""
+            
+            matriz_final.append(fila)
 
-        if activos:
-            n = len(activos)
-            for nom in activos:
-                registros.append({
-                    "fecha": f_hora.date(), "coord": nom, "v": monto/n, "j": 1/n, "p": 1/n,
-                    "pc": 1/n if "compartida" in prod else 0, "pe": 1/n if "exclusive" in prod else 0
-                })
-
-    if not registros: return {"error": "No hay coordinadores en los horarios de venta."}
-    df_calc = pd.DataFrame(registros)
-
-    # Reporte Diario Adaptativo
-    reporte_diario = []
-    for dia, g_dia in df_calc.groupby("fecha"):
-        fila = {"Día": dia}
-        for nom, idx in mapa_fijo.items():
-            g_c = g_dia[g_dia["coord"] == nom]
-            fila[f"Coordinador {idx}"] = nom if not g_c.empty else ""
-            fila[f"Ventas C{idx}"] = round(g_c["v"].sum(), 0)
-            fila[f"Journeys C{idx}"] = round(g_c["j"].sum(), 1)
-            fila[f"Pasajeros C{idx}"] = round(g_c["p"].sum(), 1)
-            fila[f"P_Excl C{idx}"] = round(g_c["pe"].sum(), 1)
-            fila[f"P_Comp C{idx}"] = round(g_c["pc"].sum(), 1)
-        reporte_diario.append(fila)
-
-    resumen_gral = df_calc.groupby("coord").agg({"v":"sum","j":"sum","p":"sum","pe":"sum","pc":"sum"}).round(1).reset_index()
-    return {"diario": pd.DataFrame(reporte_diario), "resumen": resumen_gral, "mapeo": pd.DataFrame(list(mapa_fijo.items()), columns=["Nombre", "ID"])}
+    return pd.DataFrame(matriz_final)
