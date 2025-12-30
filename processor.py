@@ -49,15 +49,17 @@ def get_active_coordinators(sale_dt, turnos):
             if start > end and s_time < end: active.append(name)
     return list(set(active))
 
-def procesar_maestro(ventas_file, turnos_file, start_date, end_date):
+def procesar_final_airport(ventas_file, turnos_file, start_date, end_date):
     turnos = load_turnos(turnos_file)
     sales = pd.read_excel(ventas_file) if str(ventas_file.name).endswith('.xlsx') else pd.read_csv(ventas_file, encoding='latin1', sep=None, engine='python')
     sales['date'] = pd.to_datetime(sales['date'])
     sales = sales[(sales['date'].dt.date >= start_date) & (sales['date'].dt.date <= end_date)].copy()
 
+    # Mapeo Fijo por Nombre (Orden Alfabético)
     nombres_fijos = sorted(list(turnos.keys()))
     mapa_cols = {nombre: i+1 for i, nombre in enumerate(nombres_fijos)}
     
+    # Asignación de ventas
     ventas_calc = []
     for _, row in sales.iterrows():
         activos = get_active_coordinators(row['date'], turnos)
@@ -70,14 +72,15 @@ def procesar_maestro(ventas_file, turnos_file, start_date, end_date):
     
     df_v = pd.DataFrame(ventas_calc)
 
-    # 1. MATRIZ HORARIA Y NO ASIGNADOS
     matriz_data = []
-    no_asignados_data = []
+    na_horario = []
+    
     curr = start_date
     while curr <= end_date:
         for h in range(24):
             activos_h = get_active_coordinators(datetime.combine(curr, time(h, 0)), turnos)
             fila_h = {'Día': curr, 'Tramo': f'{h:02d}:00 - {h+1:02d}:00'}
+            
             for nom, idx in mapa_cols.items():
                 if nom in activos_h:
                     fila_h[f'Coordinador {idx}'] = nom
@@ -88,12 +91,14 @@ def procesar_maestro(ventas_file, turnos_file, start_date, end_date):
                     fila_h[f'Venta C{idx}'] = 0
             matriz_data.append(fila_h)
             
-            # Ventas No Asignadas por franja
+            # Ventas No Asignadas
             v_na = df_v[(df_v['fecha']==curr) & (df_v['hora']==h) & (df_v['asignado']==False)]['v'].sum()
-            no_asignados_data.append({'Día': curr, 'Tramo': f'{h:02d}:00 - {h+1:02d}:00', 'Venta No Asignada': round(v_na)})
+            na_horario.append({'Día': curr, 'Tramo': f'{h:02d}:00 - {h+1:02d}:00', 'Venta No Asignada': round(v_na)})
         curr += timedelta(days=1)
 
-    df_na = pd.DataFrame(no_asignados_data)
-    resumen_na_diario = df_na.groupby('Día')['Venta No Asignada'].sum().reset_index()
-    
-    return pd.DataFrame(matriz_data), df_na, resumen_na_diario, df_v[df_v['asignado']==True].groupby('coord')['v'].sum().reset_index()
+    df_na_h = pd.DataFrame(na_horario)
+    df_na_d = df_na_h.groupby('Día')['Venta No Asignada'].sum().reset_index()
+    resumen_p = df_v[df_v['asignado']==True].groupby('coord')['v'].sum().round(0).reset_index()
+    resumen_p.columns = ['Coordinador', 'Venta Total']
+
+    return pd.DataFrame(matriz_data), df_na_h, df_na_d, resumen_p
