@@ -6,7 +6,6 @@ def parse_turno(turno_raw):
     turno_raw = str(turno_raw).strip().lower()
     if turno_raw in ["", "libre"]: return None
     try:
-        # Limpieza de textos extras del Excel
         clean_txt = turno_raw.replace("diurno", "").replace("nocturno", "").replace("/", "").strip()
         partes = clean_txt.split("-")
         def extract_time(t_str):
@@ -40,7 +39,7 @@ def asignar_ventas(df_ventas, turnos, fecha_i, fecha_f):
     df_ventas['date'] = pd.to_datetime(df_ventas['date'])
     mask = (df_ventas['date'].dt.date >= fecha_i) & (df_ventas['date'].dt.date <= fecha_f)
     df_f = df_ventas.loc[mask].copy()
-    if df_f.empty: return None, None, None, None
+    if df_f.empty: return None, None, None, None, None
 
     registros = []
     for _, row in df_f.iterrows():
@@ -54,7 +53,6 @@ def asignar_ventas(df_ventas, turnos, fecha_i, fecha_f):
             r = d_turnos.get(fecha_v)
             if r:
                 h_i, h_f = r
-                # Lógica de cruce de medianoche
                 if (h_i <= h_f and h_i <= hora_v <= h_f) or (h_i > h_f and (hora_v >= h_i or hora_v <= h_f)):
                     activos.append({"nombre": nombre, "turno": f"{h_i.strftime('%H:%M')}-{h_f.strftime('%H:%M')}"})
 
@@ -72,32 +70,27 @@ def asignar_ventas(df_ventas, turnos, fecha_i, fecha_f):
             })
 
     df_detallado = pd.DataFrame(registros)
-    
-    # 1. Resumen General
     df_resumen = df_detallado[df_detallado["estado"] == "Asignado"].groupby("coordinador")["venta_asignada"].sum().reset_index()
-
-    # 2. Reporte de Franjas SIN Coordinadores (Para objeciones)
+    
+    # Reporte SIN ASIGNAR
     df_sin_agente = df_detallado[df_detallado["estado"] == "No Asignado"].copy()
     resumen_sin_agente = df_sin_agente.groupby(["fecha", "franja"]).agg(
         ventas_totales_perdidas=("venta_original", "sum"),
         cantidad_viajes=("venta_original", "count")
     ).reset_index()
 
-    # 3. Vista Visual (Columnas Coordinador 1, Turno Coordinador 1...)
+    # Vista Visual (Columnas Coordinador X / Turno Coordinador X)
     vista_sup = []
     for (f, fr), group in df_detallado.groupby(["fecha", "franja"]):
         fila = {"Fecha": f, "Franja": fr}
-        # Solo tomamos coordinadores reales
         agentes_en_franja = group[group["estado"] == "Asignado"][["coordinador", "turno_ref"]].drop_duplicates()
-        
         for i, (_, row_ag) in enumerate(agentes_en_franja.iterrows(), 1):
             fila[f"Coordinador {i}"] = row_ag["coordinador"]
             fila[f"Turno Coordinador {i}"] = row_ag["turno_ref"]
-        
-        # Venta total de esa hora (sin duplicar si hay varios agentes)
         fila["Venta Total Franja"] = group.drop_duplicates(subset=["hora_exacta"])["venta_original"].sum()
         vista_sup.append(fila)
     
     df_vista_visual = pd.DataFrame(vista_sup).fillna("-")
 
+    # RETORNA 5 ELEMENTOS
     return df_detallado, df_resumen, resumen_sin_agente, df_vista_visual, df_sin_agente
