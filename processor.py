@@ -1,231 +1,227 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime, time, timedelta
+import io
 
+# --- FUNCIONES DE PARSEO ---
 def parse_time(t_str):
-    t_str = str(t_str).strip().split(' ')[0]
+    t_str = str(t_str).strip().lower().split(' ')[0]
     try:
         if t_str.count(':') == 2:
             return datetime.strptime(t_str, "%H:%M:%S").time()
-        else:
-            return datetime.strptime(t_str, "%H:%M").time()
-    except:
-        return None
+        return datetime.strptime(t_str, "%H:%M").time()
+    except: return None
 
 def parse_turno_range(turno_raw):
     if pd.isna(turno_raw): return None
     t_str = str(turno_raw).strip().lower()
-    if t_str == "" or t_str == "libre": return None
+    if t_str in ["", "libre", "nan"]: return None
     try:
-        partes = t_str.split('-')
-        if len(partes) < 2: return None
-        ini_str = partes[0].strip()
-        fin_str = partes[1].strip().split(' ')[0]
-        t_ini = parse_time(ini_str)
-        t_fin = parse_time(fin_str)
-        if t_ini and t_fin:
-            return (t_ini, t_fin)
-        return None
-    except:
-        return None
+        t_clean = t_str.replace("diurno","").replace("nocturno","").replace("/","").strip()
+        partes = t_clean.split('-')
+        t_ini, t_fin = parse_time(partes[0]), parse_time(partes[1])
+        return (t_ini, t_fin) if t_ini and t_fin else None
+    except: return None
 
-def load_turnos(file_path):
-    if file_path.endswith('.xlsx'):
-        df_raw = pd.read_excel(file_path)
+def read_file_safely(file):
+    """Lee el archivo intentando detectar el formato correcto."""
+    if hasattr(file, 'name') and file.name.endswith('.xlsx'):
+        return pd.read_excel(file, header=None)
     else:
-        df_raw = pd.read_csv(file_path)
-    
-    # Asume que la fila 0 tiene las fechas reales (ej: 2025-11-01...)
-    actual_dates = pd.to_datetime(df_raw.iloc[0, 1:], errors='coerce').dt.date.tolist()
+        try:
+            return pd.read_csv(file, header=None, encoding='utf-8', sep=None, engine='python')
+        except UnicodeDecodeError:
+            file.seek(0)
+            return pd.read_csv(file, header=None, encoding='latin-1', sep=None, engine='python')
+
+def load_turnos(file):
+    df_raw = read_file_safely(file)
+    # Fila 1 tiene las fechas (índice 1)
+    actual_dates = pd.to_datetime(df_raw.iloc[1, 1:], errors='coerce').dt.date.tolist()
     
     turnos_data = {}
-    # Nombres comienzan en fila index 2
+    # Los datos parten desde la fila 2 (índice 2)
+    # IMPORTANTE: No ordenamos alfabéticamente después, respetamos este orden de inserción
     for i in range(2, len(df_raw)):
         row = df_raw.iloc[i]
-        name = str(row[0]).strip()
-        if name == "nan" or name == "": continue
+        nombre = str(row.iloc[0]).strip() # Quitamos .upper() para mantener formato original si deseas
+        if nombre.upper() in ["NAN", "", "NOMBRE"]: continue
         
-        person_shifts = {}
-        for col_idx, d in enumerate(actual_dates):
-            if col_idx + 1 < len(row):
-                val = row[col_idx + 1]
-                rng = parse_turno_range(val)
-                if rng:
-                    person_shifts[d] = rng
-        turnos_data[name] = person_shifts
-    return turnos_data
+        # Guardamos tal cual viene en el archivo (ej: Jocsana Lopez)
+        dias = {f: parse_turno_range(row.iloc[j+1]) for j, f in enumerate(actual_dates) if f is not pd.NaT}
+        turnos_data[nombre.upper()] = dias # Usamos llave mayúscula para consistencia interna
+    return turnos_data, list(turnos_data.keys()) # Devolvemos la lista ordenada original
 
 def get_active_coordinators(sale_dt, turnos):
-    sale_date = sale_dt.date()
-    sale_time = sale_dt.time()
-    yesterday = sale_date - timedelta(days=1)
-    
+    s_date, s_time = sale_dt.date(), sale_dt.time()
+    yesterday = s_date - timedelta(days=1)
     active = []
     for name, shifts in turnos.items():
-        # Turno del día actual
-        if sale_date in shifts:
-            start, end = shifts[sale_date]
-            if start < end:
-                if start <= sale_time < end:
-                    active.append(name)
-            else: # Cruce medianoche
-                if sale_time >= start:
-                    active.append(name)
-        
-        # Turno del día anterior (overflow)
-        if yesterday in shifts:
+        if s_date in shifts and shifts[s_date]:
+            start, end = shifts[s_date]
+            if (start < end and start <= s_time < end) or (start > end and (s_time >= start or s_time < end)):
+                active.append(name)
+        if yesterday in shifts and shifts[yesterday]:
             start, end = shifts[yesterday]
-            if start > end:
-                if sale_time < end:
-                    active.append(name)
-                    
+            if start > end and s_time < end: active.append(name)
     return list(set(active))
 
-def process_all(sales_file, turnos_file, start_date, end_date):
-    turnos = load_turnos(turnos_file)
-    if sales_file.endswith('.xlsx'):
-        sales = pd.read_excel(sales_file)
-    else:
-        sales = pd.read_csv(sales_file)
-    
-    # --- CORRECCIÓN SOLICITADA: createdAt_local ---
-    # Renombramos la columna a 'date' para mantener la lógica interna
-    if 'createdAt_local' in sales.columns:
-        sales.rename(columns={'createdAt_local': 'date'}, inplace=True)
-    elif 'date' not in sales.columns:
-        return None, None, None, None # Error si no encuentra la columna fecha
-        
-    sales['date'] = pd.to_datetime(sales['date'])
-    mask = (sales['date'].dt.date >= start_date) & (sales['date'].dt.date <= end_date)
-    sales = sales.loc[mask].copy()
-    
-    # Lista Fija de Coordinadores (para mantener columnas estáticas)
-    coord_list = ['Jocsanna Lopez', 'Alexis Cornu', 'Massiel Muñoz', 'Luis Fuentes', 'Cristobal Encina', 'Gerardo Palma']
-    
-    records = []
-    for _, row in sales.iterrows():
-        s_dt = row['date']
-        price = row['qt_price_local']
-        active = get_active_coordinators(s_dt, turnos)
-        n = len(active)
-        if n > 0:
-            for name in active:
-                records.append({
-                    'fecha': s_dt.date(),
-                    'hora': s_dt.hour,
-                    'coordinador': name,
-                    'venta': price / n
-                })
-        else:
-            records.append({
-                'fecha': s_dt.date(),
-                'hora': s_dt.hour,
-                'coordinador': 'SIN ASIGNAR',
-                'venta': price
-            })
+# --- GENERADOR DE EXCEL ESTILO CABIFY ---
+def generate_styled_excel(dfs_dict):
+    output = io.BytesIO()
+    writer = pd.ExcelWriter(output, engine='xlsxwriter')
+    workbook = writer.book
 
-    df_results = pd.DataFrame(records)
+    # Formatos Estilo Cabify
+    header_fmt = workbook.add_format({
+        'bold': True,
+        'font_name': 'Arial',
+        'font_size': 10,
+        'font_color': 'white',
+        'bg_color': '#7145D6', # Cabify Purple
+        'border': 0,
+        'align': 'center',
+        'valign': 'vcenter'
+    })
     
-    # 1. Matriz Horaria (Casilleros Fijos)
-    hourly_rows = []
-    current = start_date
-    while current <= end_date:
+    cell_fmt = workbook.add_format({
+        'font_name': 'Arial',
+        'font_size': 10,
+        'font_color': '#333333',
+        'border': 0, # Minimalista: sin bordes internos duros
+        'bottom': 1, # Solo líneas horizontales suaves
+        'bottom_color': '#E0E0E0',
+        'align': 'center',
+        'valign': 'vcenter'
+    })
+
+    coord_col_fmt = workbook.add_format({
+        'font_name': 'Arial', 
+        'font_size': 10,
+        'bold': True,
+        'font_color': '#7145D6', # Morado para nombres
+        'bg_color': '#F8F8F8',
+        'bottom': 1,
+        'bottom_color': '#E0E0E0',
+        'align': 'left'
+    })
+
+    for sheet_name, df in dfs_dict.items():
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
+        worksheet = writer.sheets[sheet_name]
+        
+        # Ajustar ancho de columnas y aplicar formato
+        for idx, col in enumerate(df.columns):
+            max_len = max(df[col].astype(str).map(len).max(), len(col)) + 4
+            worksheet.set_column(idx, idx, max_len, cell_fmt)
+            
+            # Formato especial para primera columna si es texto
+            if idx == 0:
+                worksheet.set_column(idx, idx, max_len + 5, coord_col_fmt)
+            
+            # Escribir cabecera con formato
+            worksheet.write(0, idx, col, header_fmt)
+        
+        # Ocultar líneas de cuadrícula para look limpio
+        worksheet.hide_gridlines(2)
+
+    writer.close()
+    return output.getvalue()
+
+def process_all(sales_file, turnos_file, start_date, end_date):
+    turnos, ordered_names = load_turnos(turnos_file)
+    
+    # Manejo robusto de ventas y columna createdAt_local
+    df_sales = read_file_safely(sales_file)
+    if 'createdAt_local' in df_sales.columns:
+        df_sales.rename(columns={'createdAt_local': 'date'}, inplace=True)
+    
+    df_sales['date'] = pd.to_datetime(df_sales['date'])
+    df_sales = df_sales[(df_sales['date'].dt.date >= start_date) & (df_sales['date'].dt.date <= end_date)].copy()
+
+    # Mapeo Fijo usando el ORDEN DEL ARCHIVO (no alfabético)
+    mapa_cols = {nombre: i+1 for i, nombre in enumerate(ordered_names)}
+    
+    ventas_calc = []
+    for _, row in df_sales.iterrows():
+        activos = get_active_coordinators(row['date'], turnos)
+        n = len(activos)
+        if n > 0:
+            for name in activos:
+                ventas_calc.append({'fecha': row['date'].date(), 'hora': row['date'].hour, 'coord': name, 'v': row['qt_price_local']/n, 'asignado': True})
+        else:
+            ventas_calc.append({'fecha': row['date'].date(), 'hora': row['date'].hour, 'coord': 'SIN ASIGNAR', 'v': row['qt_price_local'], 'asignado': False})
+    
+    df_v = pd.DataFrame(ventas_calc)
+
+    # 1. Matriz Horaria
+    matriz_data = []
+    curr = start_date
+    while curr <= end_date:
         for h in range(24):
-            check_dt = datetime.combine(current, time(h, 0))
-            active_names = get_active_coordinators(check_dt, turnos)
+            check_dt = datetime.combine(curr, time(h, 0))
+            activos_h = get_active_coordinators(check_dt, turnos)
+            fila_h = {'Día': curr, 'Tramo': f'{h:02d}:00 - {h+1:02d}:00', 'Count': len(activos_h), 'Activos': activos_h}
             
-            row_dict = {
-                'Día': current,
-                'Hora Inicio': f'{h:02d}:00',
-                'Hora Fin': f'{(h+1)%24:02d}:00',
-                'Count': len(active_names), # Auxiliar para lógica de compartidos
-                'Activos': active_names     # Auxiliar
-            }
-            # Llenar columnas fijas de nombres
-            for i, name in enumerate(coord_list):
-                row_dict[f'Coordinador {i+1}'] = name if name in active_names else ""
-            
-            # Llenar columnas fijas de ventas
-            if not df_results.empty:
-                h_data = df_results[(df_results['fecha'] == current) & (df_results['hora'] == h)]
-                for i, name in enumerate(coord_list):
-                    v = h_data[h_data['coordinador'] == name]['venta'].sum()
-                    row_dict[f'Ventas C{i+1}'] = round(v) if v > 0 else 0
-            else:
-                 for i, name in enumerate(coord_list):
-                    row_dict[f'Ventas C{i+1}'] = 0
-            
-            hourly_rows.append(row_dict)
-        current += timedelta(days=1)
+            for nom in ordered_names: # Usamos el orden del archivo
+                idx = mapa_cols[nom]
+                if nom in activos_h:
+                    fila_h[f'Coordinador {idx}'] = nom
+                    # Ventas
+                    if not df_v.empty:
+                        v_h = df_v[(df_v['fecha']==curr) & (df_v['hora']==h) & (df_v['coord']==nom)]['v'].sum()
+                        fila_h[f'Venta C{idx}'] = round(v_h)
+                    else:
+                        fila_h[f'Venta C{idx}'] = 0
+                else:
+                    fila_h[f'Coordinador {idx}'] = ""
+                    fila_h[f'Venta C{idx}'] = 0
+            matriz_data.append(fila_h)
+        curr += timedelta(days=1)
     
-    df_hourly = pd.DataFrame(hourly_rows)
+    df_hourly = pd.DataFrame(matriz_data)
     
     # 2. Resumen Diario
-    daily_summaries = []
-    current = start_date
-    while current <= end_date:
-        if not df_results.empty:
-            day_data = df_results[df_results['fecha'] == current]
-        else:
-            day_data = pd.DataFrame(columns=['coordinador', 'venta'])
+    daily_rows = []
+    curr = start_date
+    while curr <= end_date:
+        row = {'Día': curr}
+        for nom in ordered_names:
+            idx = mapa_cols[nom]
+            if not df_v.empty:
+                v = df_v[(df_v['fecha']==curr) & (df_v['coord']==nom)]['v'].sum()
+            else: v = 0
+            row[f'{nom} (C{idx})'] = round(v)
+        daily_rows.append(row)
+        curr += timedelta(days=1)
+    df_daily = pd.DataFrame(daily_rows)
 
-        sum_dict = {'Día': current}
-        for i, name in enumerate(coord_list):
-            v = day_data[day_data['coordinador'] == name]['venta'].sum()
-            sum_dict[f'Ventas Coord {i+1}'] = round(v)
-        daily_summaries.append(sum_dict)
-        current += timedelta(days=1)
-    df_daily = pd.DataFrame(daily_summaries)
-    
-    # 3. Resumen Total y 4. Franjas Compartidas
+    # 3. Totales y Franjas
     total_metrics = []
     shared_stats = []
     
-    for name in coord_list:
-        if not df_results.empty:
-            v = df_results[df_results['coordinador'] == name]['venta'].sum()
-        else:
-            v = 0
+    for nom in ordered_names:
+        if not df_v.empty:
+            v = df_v[df_v['coord']==nom]['v'].sum()
+        else: v = 0
         
-        # Contar días trabajados (Turnos)
+        # Contar días trabajados
         worked_days = 0
-        if name in turnos:
-            for d in turnos[name]:
-                if start_date <= d <= end_date:
+        if nom in turnos:
+            for d in turnos[nom]:
+                if start_date <= d <= end_date and turnos[nom][d] is not None:
                     worked_days += 1
         
-        total_metrics.append({
-            'Coordinador': name,
-            'Ventas Totales': round(v),
-            'Turnos Trabajados': worked_days
-        })
+        total_metrics.append({'Coordinador': nom, 'Ventas Totales': round(v), 'Turnos Trabajados': worked_days})
         
-        # Analizar franjas compartidas
-        solo = 0
-        con1 = 0
-        con2plus = 0
-        
-        for idx, row in df_hourly.iterrows():
-            if name in row['Activos']:
-                others = row['Count'] - 1
-                if others == 0:
-                    solo += 1
-                elif others == 1:
-                    con1 += 1
-                else:
-                    con2plus += 1
-        
-        shared_stats.append({
-            'Coordinador': name,
-            'Solo (Franjas)': solo,
-            'Con 1 más (Franjas)': con1,
-            'Con 2 o más (Franjas)': con2plus
-        })
+        # Franjas
+        solo = 0; con1 = 0; con2plus = 0
+        for _, r in df_hourly.iterrows():
+            if nom in r['Activos']:
+                others = r['Count'] - 1
+                if others == 0: solo += 1
+                elif others == 1: con1 += 1
+                else: con2plus += 1
+        shared_stats.append({'Coordinador': nom, 'Solo (Horas)': solo, 'Con 1 (Horas)': con1, 'Con 2+ (Horas)': con2plus})
 
-    df_total = pd.DataFrame(total_metrics)
-    df_shared = pd.DataFrame(shared_stats)
-    
-    # Limpiar auxiliares de df_hourly para visualización
-    display_hourly = df_hourly.drop(columns=['Count', 'Activos'])
-    
-    return display_hourly, df_daily, df_total, df_shared
+    return df_hourly.drop(columns=['Count', 'Activos']), df_daily, pd.DataFrame(total_metrics), pd.DataFrame(shared_stats)
