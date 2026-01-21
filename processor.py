@@ -3,28 +3,29 @@ import numpy as np
 from datetime import datetime, time, timedelta
 import io
 
-# --- 1. CONFIGURACIÓN DE REGLAS DE GESTIÓN ---
-def is_in_special_hours(shift_start_time, current_time):
+# --- REGLAS DE GESTIÓN (LOZA/COLACIÓN) ---
+def is_in_special_hours(shift_start_time, current_time_obj):
     """
-    Determina si una hora específica es 'Horario de Gestión/Colación' 
-    basado en la hora de inicio del turno.
-    Retorna True si NO debe recibir ventas (está en loza/colación).
+    Retorna True si el coordinador está en horario de Loza/Colación
+    y NO debe recibir ventas.
     """
-    h_start = shift_start_time.hour
-    h_curr = current_time.hour
+    if shift_start_time is None: return False
     
-    # Regla 1: Turno de 10:00 (Gestión 10-11 y 14-16)
+    h_start = shift_start_time.hour
+    h_curr = current_time_obj.hour
+    
+    # Regla 1: Turno de 10:00 (Gestión OFF: 10-11 y 14-16)
     if h_start == 10:
-        if h_curr == 10: return True          # 10:00 a 10:59
-        if 14 <= h_curr < 16: return True     # 14:00 a 15:59
+        if h_curr == 10: return True          # 10:00 - 10:59
+        if 14 <= h_curr < 16: return True     # 14:00 - 15:59
         
-    # Regla 2: Turno de 05:00 (Gestión 11-14)
+    # Regla 2: Turno de 05:00 (Gestión OFF: 11-14)
     elif h_start == 5:
-        if 11 <= h_curr < 14: return True     # 11:00 a 13:59
+        if 11 <= h_curr < 14: return True     # 11:00 - 13:59
         
-    # Regla 3: Turno de 21:00 (Gestión 06-09 am del día siguiente o actual)
+    # Regla 3: Turno de 21:00 (Gestión OFF: 06-09)
     elif h_start == 21:
-        if 6 <= h_curr < 9: return True       # 06:00 a 08:59
+        if 6 <= h_curr < 9: return True       # 06:00 - 08:59
         
     return False
 
@@ -79,44 +80,43 @@ def load_turnos(file):
         
     return turnos_data, ordered_names
 
-def get_active_coordinators(sale_dt, turnos):
+def get_active_coordinators_info(sale_dt, turnos):
     """
-    Retorna lista de tuplas: (Nombre, HoraInicioTurno)
+    Retorna una lista de tuplas: (Nombre, Hora_Inicio_Turno)
+    Solo incluye a quienes están físicamente presentes.
     """
     s_date, s_time = sale_dt.date(), sale_dt.time()
     yesterday = s_date - timedelta(days=1)
-    
-    active_details = [] # [(Nombre, StartTime), ...]
+    active_info = []
     
     for name, shifts in turnos.items():
         # Turno Hoy
         if s_date in shifts and shifts[s_date]:
             start, end = shifts[s_date]
             if (start < end and start <= s_time < end) or (start > end and (s_time >= start or s_time < end)):
-                active_details.append((name, start))
+                active_info.append((name, start))
                 
         # Turno Ayer (Overflow)
         if yesterday in shifts and shifts[yesterday]:
             start, end = shifts[yesterday]
-            if start > end and s_time < end:
-                active_details.append((name, start))
+            if start > end and s_time < end: 
+                active_info.append((name, start))
                 
-    # Eliminamos duplicados si hubiese cruce raro (set de tuplas)
-    return list(set(active_details))
+    return list(set(active_info))
 
-# --- GENERADOR DE EXCEL CON FORMATO CONDICIONAL ---
+# --- GENERADOR DE EXCEL ESTILO CABIFY ---
 def generate_styled_excel(dfs_dict):
     output = io.BytesIO()
     writer = pd.ExcelWriter(output, engine='xlsxwriter')
     workbook = writer.book
 
-    # Formatos
+    # Estilos
     header_fmt = workbook.add_format({'bold': True, 'font_name': 'Arial', 'font_size': 10, 'font_color': 'white', 'bg_color': '#7145D6', 'border': 0, 'align': 'center', 'valign': 'vcenter'})
     cell_fmt = workbook.add_format({'font_name': 'Arial', 'font_size': 10, 'font_color': '#333333', 'bottom': 1, 'bottom_color': '#E0E0E0', 'align': 'center', 'valign': 'vcenter'})
     name_col_fmt = workbook.add_format({'font_name': 'Arial', 'font_size': 10, 'bold': True, 'font_color': '#7145D6', 'bg_color': '#F9F9F9', 'bottom': 1, 'bottom_color': '#E0E0E0', 'align': 'left'})
     
-    # Formato especial para "En Loza" (Color Naranja suave)
-    special_fmt = workbook.add_format({'font_name': 'Arial', 'font_size': 10, 'font_color': '#9C6500', 'bg_color': '#FFEB9C', 'bottom': 1, 'bottom_color': '#E0E0E0', 'align': 'center'})
+    # Estilo Naranja para Horario Especial (Loza/Colación)
+    special_fmt = workbook.add_format({'font_name': 'Arial', 'font_size': 10, 'font_color': '#9C4A00', 'bg_color': '#FFEB9C', 'bottom': 1, 'bottom_color': '#E0E0E0', 'align': 'center'})
 
     for sheet_name, df in dfs_dict.items():
         df.to_excel(writer, sheet_name=sheet_name, index=False)
@@ -131,7 +131,7 @@ def generate_styled_excel(dfs_dict):
             
             ws.write(0, idx, col, header_fmt)
             
-            # Aplicar formato condicional para celdas con (*)
+            # Formato condicional para celdas con (*)
             if sheet_name == 'Matriz_Horaria':
                 ws.conditional_format(1, idx, len(df), idx, {
                     'type': 'text',
@@ -149,11 +149,12 @@ def process_all(sales_file, turnos_file, start_date, end_date):
     turnos, ordered_names = load_turnos(turnos_file)
     df_sales = read_file_generic(sales_file, has_header=True)
     
-    # Normalización Header
+    # Normalización Header y Fechas
     df_sales.columns = [c.strip() for c in df_sales.columns]
     if 'createdAt_local' in df_sales.columns:
         df_sales.rename(columns={'createdAt_local': 'date'}, inplace=True)
     elif 'date' not in df_sales.columns:
+        # Búsqueda fallback
         for col in df_sales.columns:
             if 'date' in col.lower() or 'created' in col.lower() or 'fecha' in col.lower():
                 df_sales.rename(columns={col: 'date'}, inplace=True)
@@ -169,21 +170,20 @@ def process_all(sales_file, turnos_file, start_date, end_date):
     
     ventas_calc = []
     
-    # --- PROCESO DE ASIGNACIÓN CON REGLAS DE GESTIÓN ---
+    # --- LOGICA DE VENTAS CON REGLAS DE EXCLUSIÓN ---
     for _, row in df_sales.iterrows():
-        # 1. Obtener quiénes están físicamente
-        activos_fisicos_info = get_active_coordinators(row['date'], turnos) # Lista de (Nombre, StartTime)
+        # 1. Quiénes están físicamente
+        fisicos_info = get_active_coordinators_info(row['date'], turnos) # [(Name, StartTime), ...]
         
-        # 2. Filtrar quiénes pueden vender (NO están en Loza/Colación)
-        eligibles_para_venta = []
-        for name, start_time in activos_fisicos_info:
-            if not is_in_special_hours(start_time, row['date'].time()):
-                eligibles_para_venta.append(name)
+        # 2. Quiénes son ELEGIBLES (No están en Loza/Colación)
+        eligibles = []
+        for name, start_t in fisicos_info:
+            if not is_in_special_hours(start_t, row['date'].time()):
+                eligibles.append(name)
         
-        n = len(eligibles_para_venta)
-        
+        n = len(eligibles)
         if n > 0:
-            for name in eligibles_para_venta:
+            for name in eligibles:
                 ventas_calc.append({'fecha': row['date'].date(), 'hora': row['date'].hour, 'coord': name, 'v': row['qt_price_local']/n})
         else:
             ventas_calc.append({'fecha': row['date'].date(), 'hora': row['date'].hour, 'coord': 'SIN ASIGNAR', 'v': row['qt_price_local']})
@@ -198,29 +198,27 @@ def process_all(sales_file, turnos_file, start_date, end_date):
         for h in range(24):
             check_dt = datetime.combine(curr, time(h, 0))
             
-            # Info Física vs Info Venta
-            activos_fisicos_tuples = get_active_coordinators(check_dt, turnos)
-            nombres_fisicos = [x[0] for x in activos_fisicos_tuples]
+            # Obtenemos info física y de elegibilidad para la hora completa
+            fisicos_info = get_active_coordinators_info(check_dt, turnos)
+            nombres_fisicos = [x[0] for x in fisicos_info]
             
-            # Quiénes estaban habilitados para vender en esta hora (aprox, checkeamos con min 00)
             nombres_eligibles = []
-            for name, start_t in activos_fisicos_tuples:
+            for name, start_t in fisicos_info:
                 if not is_in_special_hours(start_t, check_dt.time()):
                     nombres_eligibles.append(name)
             
             fila = {'Día': curr, 'Tramo': f'{h:02d}:00 - {h+1:02d}:00'}
-            
-            # Auxiliares para estadística de competencia (Solo contamos si estaba ELIGIBLE)
-            fila['_count_eligible'] = len(nombres_eligibles)
+            # Auxiliares para estadística de franjas (Solo elegibles cuentan para competencia)
             fila['_eligibles'] = nombres_eligibles
+            fila['_count_eligible'] = len(nombres_eligibles)
             
             for nom in ordered_names:
                 idx = mapa_cols[nom]
                 if nom in nombres_fisicos:
-                    # Si está físico pero NO eligible (está en Loza) -> Marcamos con (*)
+                    # Si está físico pero no eligible -> Marcar (*)
                     if nom not in nombres_eligibles:
                         fila[f'Coord {idx}'] = f"{nom} (*)"
-                        fila[f'Venta C{idx}'] = 0 # No recibe venta
+                        fila[f'Venta C{idx}'] = 0
                     else:
                         fila[f'Coord {idx}'] = nom
                         val = 0
@@ -246,13 +244,14 @@ def process_all(sales_file, turnos_file, start_date, end_date):
         daily_rows.append(r)
     df_daily = pd.DataFrame(daily_rows)
 
-    # 3. Totales y Franjas
+    # 3. Métricas Totales y Franjas
     total_metrics = []
     shared_stats = []
     
     for nom in ordered_names:
         tot_v = df_v[df_v['coord']==nom]['v'].sum() if not df_v.empty else 0
         
+        # Turnos Trabajados
         dias_trabajados = 0
         if nom in turnos:
             for d, rng in turnos[nom].items():
@@ -261,16 +260,16 @@ def process_all(sales_file, turnos_file, start_date, end_date):
         
         total_metrics.append({'Coordinador': nom, 'Ventas Totales': round(tot_v), 'Turnos Trabajados': dias_trabajados})
         
-        # Franjas (Basadas en competencia de venta)
+        # Franjas (Solo cuentan horas de venta efectiva)
         solo = 0; con1 = 0; con2 = 0
-        for _, row_h in df_hourly.iterrows():
-            if nom in row_h['_eligibles']: # Solo cuenta si estaba vendiendo
-                others = row_h['_count_eligible'] - 1
+        for _, r in df_hourly.iterrows():
+            if nom in r['_eligibles']:
+                others = r['_count_eligible'] - 1
                 if others == 0: solo += 1
                 elif others == 1: con1 += 1
                 else: con2 += 1
         
-        shared_stats.append({'Coordinador': nom, 'Solo (Horas Venta)': solo, 'Con 1 (Horas Venta)': con1, 'Con 2+ (Horas Venta)': con2})
+        shared_stats.append({'Coordinador': nom, 'Horas Solo (Venta)': solo, 'Horas con 1 (Venta)': con1, 'Horas con 2+ (Venta)': con2})
 
-    df_h_clean = df_hourly.drop(columns=['_count_eligible', '_eligibles'])
+    df_h_clean = df_hourly.drop(columns=['_eligibles', '_count_eligible'])
     return df_h_clean, df_daily, pd.DataFrame(total_metrics), pd.DataFrame(shared_stats)
