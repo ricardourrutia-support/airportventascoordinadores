@@ -5,6 +5,9 @@ import io
 
 # --- REGLAS DE GESTIÓN (LOZA/COLACIÓN) ---
 def get_initial_status(shift_start, h_curr):
+    """
+    Define si está VENDIENDO (True) o en LOZA (False).
+    """
     if shift_start is None: return False
     h_start = shift_start.hour
     
@@ -17,13 +20,13 @@ def get_initial_status(shift_start, h_curr):
     elif h_start == 5:
         if 11 <= h_curr < 14: return False
         
-    # Regla 3: Turno de 21:00 (Gestión OFF: 06-09)
+    # Regla 3: Turno de 21:00 (Gestión OFF: 05-08) <-- CORREGIDO
     elif h_start == 21:
-        if 6 <= h_curr < 9: return False
+        if 5 <= h_curr < 8: return False
         
     return True 
 
-# --- FUNCIONES DE PARSEO ---
+# --- PARSEO DE FECHAS ---
 def parse_time(t_str):
     t_str = str(t_str).strip().lower().split(' ')[0]
     try:
@@ -56,7 +59,7 @@ def read_file_generic(file, has_header=True):
 
 # --- CARGA DE DATOS ---
 def load_data_once(sales_file, turnos_file):
-    # 1. Cargar Turnos
+    # 1. Turnos
     df_turnos = read_file_generic(turnos_file, has_header=False)
     actual_dates = pd.to_datetime(df_turnos.iloc[1, 1:], errors='coerce').dt.date.tolist()
     
@@ -72,11 +75,10 @@ def load_data_once(sales_file, turnos_file):
         dias = {f: parse_turno_range(row.iloc[j+1]) for j, f in enumerate(actual_dates) if f is not pd.NaT}
         turnos_dict[nombre] = dias
 
-    # 2. Cargar Ventas
+    # 2. Ventas
     df_sales = read_file_generic(sales_file, has_header=True)
     df_sales.columns = [c.strip() for c in df_sales.columns]
     
-    # Normalizar fecha
     if 'createdAt_local' in df_sales.columns:
         df_sales.rename(columns={'createdAt_local': 'date'}, inplace=True)
     elif 'date' not in df_sales.columns:
@@ -90,15 +92,19 @@ def load_data_once(sales_file, turnos_file):
     df_sales['date'] = pd.to_datetime(df_sales['date'])
     return df_sales, turnos_dict, ordered_names
 
-# --- GENERAR MATRIZ INICIAL ---
+# --- GENERACIÓN DE MATRIZ DE ESTADO (CORREGIDA) ---
 def generate_initial_state_matrix(turnos, ordered_names, start_date, end_date):
     data = []
     curr = start_date
     while curr <= end_date:
         yesterday = curr - timedelta(days=1)
         for h in range(24):
-            check_time = time(h, 0)
+            check_time = time(h, 0) # e.g. 05:00:00
+            
+            # Indices ocultos para la lógica interna
             row = {'_date_str': str(curr), '_hour': h}
+            
+            # Columnas visibles en el Editor
             row['Fecha'] = str(curr)
             row['Hora'] = f"{h:02d}:00"
             
@@ -106,17 +112,29 @@ def generate_initial_state_matrix(turnos, ordered_names, start_date, end_date):
                 shifts = turnos.get(name, {})
                 status = None 
                 
-                # Turno Hoy
+                # --- CORRECCIÓN CRÍTICA DE TURNOS NOCTURNOS ---
+                
+                # 1. Revisar turno asignado a HOY
                 if curr in shifts and shifts[curr]:
                     s, e = shifts[curr]
-                    if (s < e and s <= check_time < e) or (s > e and (check_time >= s or check_time < e)):
-                        status = get_initial_status(s, h)
+                    if s > e: 
+                        # Turno cruza medianoche (Ej: 21:00 a 08:00)
+                        # HOY solo es válido desde la hora de inicio hasta las 23:59
+                        if h >= s.hour:
+                            status = get_initial_status(s, h)
+                    else:
+                        # Turno normal (Ej: 10:00 a 21:00)
+                        if s <= check_time < e:
+                            status = get_initial_status(s, h)
                 
-                # Turno Ayer
+                # 2. Revisar turno asignado a AYER (Overflow)
                 if status is None and yesterday in shifts and shifts[yesterday]:
                     s, e = shifts[yesterday]
-                    if s > e and check_time < e:
-                        status = get_initial_status(s, h)
+                    if s > e: 
+                        # Turno cruzaba medianoche (Ej: 21:00 ayer a 08:00 hoy)
+                        # HOY es válido solo la madrugada (hasta la hora de fin)
+                        if check_time < e:
+                            status = get_initial_status(s, h)
                 
                 row[name] = status
             data.append(row)
@@ -125,9 +143,10 @@ def generate_initial_state_matrix(turnos, ordered_names, start_date, end_date):
 
 # --- CÁLCULO DINÁMICO ---
 def calculate_metrics_dynamic(df_sales, turnos, ordered_names, state_matrix, start_date, end_date):
-    # Agrupar Ventas
     mask = (df_sales['date'].dt.date >= start_date) & (df_sales['date'].dt.date <= end_date)
     sales_f = df_sales.loc[mask].copy()
+    
+    # Agrupación optimizada
     sales_f['d_str'] = sales_f['date'].dt.date.astype(str)
     sales_f['h'] = sales_f['date'].dt.hour
     sales_grouped = sales_f.groupby(['d_str', 'h'])['qt_price_local'].sum().to_dict()
@@ -135,15 +154,13 @@ def calculate_metrics_dynamic(df_sales, turnos, ordered_names, state_matrix, sta
     matriz_display = []
     daily_accum = {name: {} for name in ordered_names}
     stats_franjas = {name: {'Solo': 0, 'Con 1': 0, 'Con 2+': 0} for name in ordered_names}
-    
-    # NUEVO: Contador de Horas Activas (Eligibles) para el promedio
     active_hours_count = {name: 0 for name in ordered_names}
     
-    # Iterar sobre la matriz editada
     for _, row in state_matrix.iterrows():
         d_str = row['_date_str']
         h = row['_hour']
         
+        # Leemos el estado desde la matriz editada por el usuario
         eligibles = [n for n in ordered_names if row[n] is True]
         fisicos = [n for n in ordered_names if pd.notna(row[n])]
         
@@ -162,8 +179,6 @@ def calculate_metrics_dynamic(df_sales, turnos, ordered_names, state_matrix, sta
                     
                     c_date = datetime.strptime(d_str, "%Y-%m-%d").date()
                     daily_accum[name][c_date] = daily_accum[name].get(c_date, 0) + monto
-                    
-                    # Sumar hora activa
                     active_hours_count[name] += 1
                     
                     others = n - 1
@@ -171,7 +186,7 @@ def calculate_metrics_dynamic(df_sales, turnos, ordered_names, state_matrix, sta
                     elif others == 1: stats_franjas[name]['Con 1'] += 1
                     else: stats_franjas[name]['Con 2+'] += 1
                 else:
-                    fila_vis[f'Coord {idx}'] = f"{name} (*)" 
+                    fila_vis[f'Coord {idx}'] = f"{name} (*)"
                     fila_vis[f'Venta C{idx}'] = 0
             else:
                 fila_vis[f'Coord {idx}'] = ""
@@ -191,22 +206,22 @@ def calculate_metrics_dynamic(df_sales, turnos, ordered_names, state_matrix, sta
         d_iter += timedelta(days=1)
     df_daily = pd.DataFrame(daily_rows)
     
-    # Totales + Comisión + Promedio
+    # Totales
     total_metrics = []
     shared_stats_list = []
     
     for name in ordered_names:
         tot_v = sum(daily_accum[name].values())
         
+        # Turnos Trabajados (Días distintos en el calendario)
         dias_trabajados = 0
         if name in turnos:
             for d, rng in turnos[name].items():
                 if start_date <= d <= end_date and rng is not None:
                     dias_trabajados += 1
         
-        # Calcular Promedio
         horas_activas = active_hours_count[name]
-        promedio_venta_hora = tot_v / horas_activas if horas_activas > 0 else 0
+        promedio = tot_v / horas_activas if horas_activas > 0 else 0
         
         total_metrics.append({
             'Coordinador': name,
@@ -214,7 +229,7 @@ def calculate_metrics_dynamic(df_sales, turnos, ordered_names, state_matrix, sta
             'Comisión (2%)': round(tot_v * 0.02),
             'Turnos Trabajados': dias_trabajados,
             'Horas Activas': horas_activas,
-            'Promedio Venta/Hora': round(promedio_venta_hora) # NUEVA MÉTRICA
+            'Promedio Venta/Hora': round(promedio)
         })
         
         shared_stats_list.append({
