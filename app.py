@@ -55,18 +55,23 @@ if st.session_state.data_loaded:
         </div>
         """, unsafe_allow_html=True)
         
+        # --- CORRECCIÓN AQUÍ ---
+        # 1. Definimos las columnas VISIBLES (excluyendo las internas _date_str y _hour)
+        visible_cols = ["Fecha", "Hora"] + st.session_state.names
+        
+        # 2. Configuración de columnas
         col_cfg = {
-            "_date_str": st.column_config.Column(hidden=True),
-            "_hour": st.column_config.Column(hidden=True),
             "Fecha": st.column_config.TextColumn(disabled=True),
             "Hora": st.column_config.TextColumn(disabled=True)
         }
         for n in st.session_state.names:
             col_cfg[n] = st.column_config.CheckboxColumn(n)
             
+        # 3. Editor con column_order para ocultar las técnicas
         edited_mx = st.data_editor(
             st.session_state.state_matrix,
             column_config=col_cfg,
+            column_order=visible_cols, # <--- ESTO OCULTA _date_str y _hour SIN BORRARLAS
             height=500,
             use_container_width=True,
             hide_index=True
