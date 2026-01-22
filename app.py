@@ -28,6 +28,13 @@ with st.sidebar:
     d_ini = st.date_input("Inicio", date(2025, 12, 1))
     d_fin = st.date_input("Fin", date(2025, 12, 31))
     
+    st.info("""
+    **Reglas de Loza/Colación (Corregidas):**
+    • Turno 10:00 -> OFF: 10-11 y 14-16
+    • Turno 05:00 -> OFF: 11-14
+    • Turno 21:00 -> OFF: 05-08 (3 horas)
+    """)
+    
     if st.button("🔄 Cargar / Reiniciar"):
         if t_file and v_file:
             with st.spinner("Cargando y aplicando reglas..."):
@@ -55,11 +62,8 @@ if st.session_state.data_loaded:
         </div>
         """, unsafe_allow_html=True)
         
-        # --- CORRECCIÓN AQUÍ ---
-        # 1. Definimos las columnas VISIBLES (excluyendo las internas _date_str y _hour)
         visible_cols = ["Fecha", "Hora"] + st.session_state.names
         
-        # 2. Configuración de columnas
         col_cfg = {
             "Fecha": st.column_config.TextColumn(disabled=True),
             "Hora": st.column_config.TextColumn(disabled=True)
@@ -67,18 +71,16 @@ if st.session_state.data_loaded:
         for n in st.session_state.names:
             col_cfg[n] = st.column_config.CheckboxColumn(n)
             
-        # 3. Editor con column_order para ocultar las técnicas
         edited_mx = st.data_editor(
             st.session_state.state_matrix,
             column_config=col_cfg,
-            column_order=visible_cols, # <--- ESTO OCULTA _date_str y _hour SIN BORRARLAS
+            column_order=visible_cols,
             height=500,
             use_container_width=True,
             hide_index=True
         )
         st.session_state.state_matrix = edited_mx
         
-    # Recalcular métricas
     df_h, df_d, df_t, df_s = calculate_metrics_dynamic(
         st.session_state.sales_df, 
         st.session_state.turnos, 
@@ -94,7 +96,6 @@ if st.session_state.data_loaded:
             st.dataframe(df_h, use_container_width=True)
         with c2:
             st.markdown("##### Liquidación & KPIs")
-            # Mostramos las nuevas columnas con formato adecuado
             st.dataframe(
                 df_t.style.format({
                     "Ventas Totales": "${:,.0f}", 
